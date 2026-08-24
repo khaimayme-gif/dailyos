@@ -5,6 +5,8 @@ import {
   Banknote, Landmark, TrendingUp, TrendingDown, Scale, Receipt, ListChecks,
   Plus, Pencil, Trash2, Check, CalendarDays, Fingerprint, Eye, EyeOff, ClipboardList, History,
 } from 'lucide-react';
+import LoginGate, { SignOutButton } from './lib/LoginGate';
+import { useSyncedCollection, useSyncedBalances } from './lib/sync';
 
 const FONT_IMPORT = "@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;1,9..144,500&family=Inter:wght@400;500;600&display=swap');";
 
@@ -281,6 +283,7 @@ function SidebarContent({ colors, page, setPage, dark: isDark, setDark, closeMob
           >
             <Settings size={15} />
           </button>
+          <SignOutButton />
         </div>
       </div>
     </div>
@@ -533,7 +536,7 @@ function fmtYearsMonths(expirationDate, now) {
   return parts.join(' ') + ' remaining';
 }
 
-function useFinancialTotals({ incomes, expenses, obligations, balances, monthKey, now }) {
+function useFinancialTotals({ incomes, expenses, obligations, balances, categories, monthKey, now }) {
   return useMemo(() => {
     const monthIncomes = incomes.filter((r) => inMonth(r.date, monthKey));
     const monthExpenses = expenses.filter((r) => inMonth(r.date, monthKey));
@@ -574,7 +577,7 @@ function useFinancialTotals({ incomes, expenses, obligations, balances, monthKey
       amount: monthIncomes.filter((r) => r.personId === u.id).reduce((s, r) => s + Number(r.amount || 0), 0),
     })).filter((r) => r.amount > 0);
 
-    const spendingByCategory = DEFAULT_CATEGORIES
+    const spendingByCategory = categories
       .map((c) => ({
         name: c.name,
         amount: monthExpenses.filter((r) => r.categoryId === c.id).reduce((s, r) => s + Number(r.amount || 0), 0),
@@ -3073,7 +3076,7 @@ function DashboardPage({ colors, now, financial, immigration, setPage }) {
   );
 }
 
-export default function DailyOS() {
+function DailyOSApp() {
   const [stage, setStage] = useState('welcome');
   const [page, setPage] = useState('dashboard');
   const [isDark, setDark] = useState(false);
@@ -3081,29 +3084,43 @@ export default function DailyOS() {
   const [notifOpen, setNotifOpen] = useState(false);
   const now = useClock();
 
-  const [incomes, setIncomes] = useState([]);
-  const [expenses, setExpenses] = useState([]);
-  const [obligations, setObligations] = useState([]);
-  const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
-  const [balances, setBalances] = useState({ cash: 5000, bank: 40000 });
+  const [incomes, setIncomes, incomesLoaded] = useSyncedCollection('incomes');
+  const [expenses, setExpenses, expensesLoaded] = useSyncedCollection('expenses');
+  const [obligations, setObligations, obligationsLoaded] = useSyncedCollection('obligations');
+  const [categories, setCategories, categoriesLoaded] = useSyncedCollection('categories');
+  const [balances, setBalances, balancesLoaded] = useSyncedBalances();
   const [monthKey, setMonthKey] = useState(() => monthKeyOf(now));
 
-  const totals = useFinancialTotals({ incomes, expenses, obligations, balances, monthKey, now });
+  const totals = useFinancialTotals({ incomes, expenses, obligations, balances, categories, monthKey, now });
   const financial = {
     incomes, setIncomes, expenses, setExpenses, obligations, setObligations,
     categories, setCategories, balances, setBalances, monthKey, setMonthKey, totals,
   };
 
-  const [visas, setVisas] = useState([]);
-  const [ninetyDayReports, setNinetyDayReports] = useState([]);
-  const [passports, setPassports] = useState([]);
+  const [visas, setVisas, visasLoaded] = useSyncedCollection('visas');
+  const [ninetyDayReports, setNinetyDayReports, reportsLoaded] = useSyncedCollection('ninety_day_reports');
+  const [passports, setPassports, passportsLoaded] = useSyncedCollection('passports');
   const immigration = { visas, setVisas, ninetyDayReports, setNinetyDayReports, passports, setPassports };
 
   const colors = useMemo(() => (isDark ? dark : light), [isDark]);
   const currentTitle = NAV_ITEMS.find((n) => n.id === page)?.label || 'Dashboard';
 
+  const dataLoaded = incomesLoaded && expensesLoaded && obligationsLoaded && categoriesLoaded
+    && balancesLoaded && visasLoaded && reportsLoaded && passportsLoaded;
+
   if (stage === 'welcome') {
     return <WelcomeScreen colors={colors} dark={isDark} onEnter={() => setStage('app')} />;
+  }
+
+  if (!dataLoaded) {
+    return (
+      <div style={{
+        minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: colors.bg, color: colors.textFaint, fontFamily: 'Inter, sans-serif', fontSize: 13,
+      }}>
+        Loading your data…
+      </div>
+    );
   }
 
   return (
@@ -3164,5 +3181,13 @@ export default function DailyOS() {
         </main>
       </div>
     </div>
+  );
+}
+
+export default function DailyOS() {
+  return (
+    <LoginGate>
+      <DailyOSApp />
+    </LoginGate>
   );
 }
