@@ -1936,7 +1936,6 @@ function FinancialObligationsTab({ colors, financial }) {
 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
         <SummaryCard colors={colors} icon={ListChecks} label="Total commitments" value={fmtCurrency(totalCommitments)} tone="upcoming" />
-        <SummaryCard colors={colors} icon={Scale} label="Spendable money" value={fmtCurrency(totals.spendableMoney)} tone="accent" sub="Total available − unpaid this month" />
       </div>
 
       <div style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '16px 18px' }}>
