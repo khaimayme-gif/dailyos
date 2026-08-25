@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Home, Wallet, BadgeCheck, PartyPopper, Plane, Bell, Moon, Sun,
   Menu, X, Settings, ChevronRight, ChevronLeft, LogOut,
@@ -479,9 +479,13 @@ function dueDateForMonth(o, monthKey) {
   return o.dueDate;
 }
 function obligationAppliesToMonth(o, monthKey) {
-  if (o.frequency === 'Monthly' || o.frequency === 'Weekly') return true;
+  // The month the obligation's due date was originally set in — recurring
+  // obligations shouldn't show up (or count toward totals) before this,
+  // even though only the *day* matters once they're active.
+  const startMonth = o.dueDate.slice(0, 7);
+  if (o.frequency === 'Monthly' || o.frequency === 'Weekly') return monthKey >= startMonth;
   if (o.frequency === 'Yearly') {
-    return o.dueDate.split('-')[1] === monthKey.split('-')[1];
+    return o.dueDate.split('-')[1] === monthKey.split('-')[1] && monthKey >= startMonth;
   }
   return o.dueDate.slice(0, 7) === monthKey;
 }
@@ -4048,6 +4052,45 @@ function DailyOSApp() {
   const dataLoaded = incomesLoaded && expensesLoaded && obligationsLoaded && categoriesLoaded
     && balancesLoaded && visasLoaded && reportsLoaded && passportsLoaded
     && debtsLoaded && debtPaymentsLoaded && plannedDebtLoaded;
+    
+  // Auto-record monthly obligations as expenses once their due day arrives,
+  // so rent/allowance/internet etc. don't need to be entered twice. There's
+  // no backend cron here (this is a static site), so this runs as a
+  // practical equivalent: the moment the app is open on or after the due
+  // day, and it hasn't already been recorded for this month.
+  const autoPaidRef = useRef(new Set());
+  useEffect(() => {
+    if (!dataLoaded) return;
+    const currentMonthKey = monthKeyOf(now);
+
+    obligations.forEach((o) => {
+      if (o.active === false) return;
+      if (o.frequency !== 'Monthly') return;
+      if (!obligationAppliesToMonth(o, currentMonthKey)) return;
+
+      const paidMonths = o.paidMonths || [];
+      if (paidMonths.includes(currentMonthKey)) return;
+
+      const dueDateStr = dueDateForMonth(o, currentMonthKey);
+      if (diffDays(dueDateStr, now) > 0) return; // not due yet this month
+
+      const sessionKey = `${o.id}:${currentMonthKey}`;
+      if (autoPaidRef.current.has(sessionKey)) return;
+      autoPaidRef.current.add(sessionKey);
+
+      const expenseId = genId();
+      setExpenses((prev) => [...prev, {
+        id: expenseId, personId: o.personId, categoryId: o.categoryId,
+        amount: o.amount, date: dueDateStr, paymentMethod: 'Bank',
+        notes: `Auto-recorded from obligation: ${o.name}`,
+      }]);
+      setObligations((prev) => prev.map((item) => (item.id === o.id ? {
+        ...item,
+        paidMonths: [...(item.paidMonths || []), currentMonthKey],
+        linkedExpenses: [...(item.linkedExpenses || []), { monthKey: currentMonthKey, expenseId }],
+      } : item)));
+    });
+  }, [dataLoaded, obligations, monthKeyOf(now)]);
 
   if (stage === 'welcome') {
     return <WelcomeScreen colors={colors} dark={isDark} onEnter={() => setStage('app')} />;
