@@ -4,6 +4,7 @@ import {
   Menu, X, Settings, ChevronRight, ChevronLeft, LogOut,
   Banknote, Landmark, TrendingUp, TrendingDown, Scale, Receipt, ListChecks,
   Plus, Pencil, Trash2, Check, CalendarDays, Fingerprint, Eye, EyeOff, ClipboardList, History,
+  CreditCard, CalendarClock,
 } from 'lucide-react';
 import LoginGate, { SignOutButton } from './lib/LoginGate';
 import { useSyncedCollection, useSyncedBalances } from './lib/sync';
@@ -401,11 +402,14 @@ const USERS = [
 const DEFAULT_CATEGORIES = [
   'Allowance for Parents', 'Groceries', 'Visa Fees', 'Car Maintenance',
   'Rental Bill', 'Electricity / Meter Bill', 'Water Bill', 'Internet',
-  'Transportation', 'Dining', 'Shopping', 'Entertainment', 'Healthcare', 'Other',
+  'Transportation', 'Dining', 'Shopping', 'Entertainment', 'Healthcare', 'Interest', 'Other',
 ].map((name, i) => ({ id: `cat_${i}`, name, active: true }));
 
 const INCOME_TYPES = ['Salary', 'Business Income', 'Extra Money'];
 const OBLIGATION_FREQUENCIES = ['One-time', 'Weekly', 'Monthly', 'Yearly'];
+const DEBT_STATUSES = ['Active', 'Paid Off'];
+const PLANNED_DEBT_STATUSES = ['Planned', 'Paid', 'Cancelled'];
+const PAYMENT_METHODS = ['Cash', 'Bank'];
 const RENEWAL_STATUSES = ['Not Started', 'Preparing', 'Documents Ready', 'Submitted', 'Completed'];
 const DEFAULT_VISA_CHECKLIST = [
   'Passport checked', 'Required documents prepared', 'Photos prepared',
@@ -417,6 +421,7 @@ const FINANCIAL_TABS = [
   { id: 'income', label: 'Income', icon: TrendingUp },
   { id: 'expenses', label: 'Expenses', icon: Receipt },
   { id: 'obligations', label: 'Obligations', icon: ListChecks },
+  { id: 'debt', label: 'Debt', icon: CreditCard },
 ];
 
 function monthKeyOf(date) {
@@ -491,6 +496,61 @@ function obligationStatus(o, monthKey, now) {
   else if (daysUntil <= 7) { label = 'Due soon'; tone = 'upcoming'; }
   else { label = 'Upcoming'; tone = 'safe'; }
   return { label, tone, dueDateStr, daysUntil };
+}
+
+// --- Debt helpers ---
+// Interest schedule periods use 'YYYY-MM' strings for effectiveFrom/effectiveUntil,
+// same format as monthKey, so lexicographic comparison is correct chronological order.
+function currentInterestPeriod(schedule, monthKey) {
+  if (!schedule || schedule.length === 0) return null;
+  const eligible = schedule.filter(
+    (p) => p.effectiveFrom <= monthKey && (!p.effectiveUntil || p.effectiveUntil >= monthKey)
+  );
+  if (eligible.length > 0) {
+    return [...eligible].sort((a, b) => (a.effectiveFrom < b.effectiveFrom ? 1 : -1))[0];
+  }
+  const past = schedule.filter((p) => p.effectiveFrom <= monthKey)
+    .sort((a, b) => (a.effectiveFrom < b.effectiveFrom ? 1 : -1));
+  if (past.length > 0) return past[0];
+  return [...schedule].sort((a, b) => (a.effectiveFrom < b.effectiveFrom ? -1 : 1))[0] || null;
+}
+// Outstanding balance is always derived from starting balance minus recorded principal
+// payments — never trusted as a manually-stored field — so edits/deletes to payment
+// history stay consistent automatically (per the spec's data-integrity rules).
+function debtOutstandingBalance(debt, debtPayments) {
+  const principalPaid = debtPayments
+    .filter((p) => p.debtId === debt.id)
+    .reduce((s, p) => s + Number(p.principalAmount || 0), 0);
+  const startingBalance = Number(debt.startingBalance ?? debt.originalAmount ?? 0);
+  return Math.max(0, startingBalance - principalPaid);
+}
+function debtPaymentsForDebt(debtId, debtPayments) {
+  return debtPayments.filter((p) => p.debtId === debtId);
+}
+function useDebtTotals({ debts, debtPayments, plannedDebtPayments, monthKey }) {
+  return useMemo(() => {
+    const activeDebts = debts.filter((d) => (d.status || 'Active') !== 'Paid Off');
+    const totalOutstanding = debts.reduce((s, d) => s + debtOutstandingBalance(d, debtPayments), 0);
+    const totalOriginal = debts.reduce((s, d) => s + Number(d.originalAmount || 0), 0);
+    const monthlyInterestDue = activeDebts.reduce((s, d) => {
+      const period = currentInterestPeriod(d.interestSchedule, monthKey);
+      return s + Number(period?.monthlyInterestAmount || 0);
+    }, 0);
+    const monthPayments = debtPayments.filter((p) => inMonth(p.paymentDate, monthKey));
+    const interestPaidThisMonth = monthPayments.reduce((s, p) => s + Number(p.interestAmount || 0), 0);
+    const principalPaidThisMonth = monthPayments.reduce((s, p) => s + Number(p.principalAmount || 0), 0);
+    const totalPaidThisMonth = interestPaidThisMonth + principalPaidThisMonth;
+    const upcoming = plannedDebtPayments
+      .filter((p) => p.status === 'Planned')
+      .sort((a, b) => (a.plannedDate < b.plannedDate ? -1 : 1));
+    const nextPlanned = upcoming[0] || null;
+    const percentPaid = totalOriginal > 0 ? ((totalOriginal - totalOutstanding) / totalOriginal) * 100 : 0;
+    return {
+      totalOutstanding, totalOriginal, monthlyInterestDue,
+      interestPaidThisMonth, principalPaidThisMonth, totalPaidThisMonth,
+      nextPlanned, upcomingPlanned: upcoming, percentPaid,
+    };
+  }, [debts, debtPayments, plannedDebtPayments, monthKey]);
 }
 
 function visaStatus(expirationDate, now) {
@@ -811,7 +871,7 @@ function EmptyRow({ colors, text }) {
   );
 }
 
-function FinancialOverviewTab({ colors, totals, monthKey, setMonthKey, balances, setBalances }) {
+function FinancialOverviewTab({ colors, totals, monthKey, setMonthKey, balances, setBalances, debtTotals }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
@@ -830,6 +890,40 @@ function FinancialOverviewTab({ colors, totals, monthKey, setMonthKey, balances,
         <BalanceEditor colors={colors} balances={balances} setBalances={setBalances} totals={totals} />
         <SpendingGuide colors={colors} totals={totals} />
       </div>
+
+      {debtTotals && debtTotals.totalOriginal > 0 && (
+        <div style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '16px 18px' }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: colors.textPrimary, marginBottom: 12 }}>
+            Debt summary
+          </div>
+          <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 11, color: colors.textFaint }}>Outstanding debt</div>
+              <div style={{ fontSize: 16, fontWeight: 600, color: colors.textPrimary }}>{fmtCurrency(debtTotals.totalOutstanding)}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: colors.textFaint }}>Interest paid this month</div>
+              <div style={{ fontSize: 16, fontWeight: 600, color: colors.textPrimary }}>{fmtCurrency(debtTotals.interestPaidThisMonth)}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: colors.textFaint }}>Principal repaid this month</div>
+              <div style={{ fontSize: 16, fontWeight: 600, color: colors.textPrimary }}>{fmtCurrency(debtTotals.principalPaidThisMonth)}</div>
+            </div>
+            {debtTotals.nextPlanned && (
+              <div>
+                <div style={{ fontSize: 11, color: colors.textFaint }}>Upcoming payment</div>
+                <div style={{ fontSize: 16, fontWeight: 600, color: colors.textPrimary }}>
+                  {fmtCurrency(debtTotals.nextPlanned.plannedPrincipalAmount + debtTotals.nextPlanned.plannedInterestAmount)}
+                </div>
+              </div>
+            )}
+          </div>
+          <div style={{ height: 6, borderRadius: 999, background: colors.surfaceMuted, overflow: 'hidden' }}>
+            <div style={{ height: '100%', width: `${Math.min(100, debtTotals.percentPaid)}%`, background: colors.safe, borderRadius: 999 }} />
+          </div>
+          <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 4 }}>{debtTotals.percentPaid.toFixed(1)}% of original debt repaid</div>
+        </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
         <div style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '16px 18px' }}>
@@ -1194,8 +1288,6 @@ function FinancialIncomeTab({ colors, financial }) {
     </div>
   );
 }
-
-const PAYMENT_METHODS = ['Cash', 'Bank'];
 
 function ExpenseModal({ colors, onClose, onSave, initial, categories }) {
   const activeCats = categories.filter((c) => c.active);
@@ -1885,9 +1977,778 @@ function FinancialObligationsTab({ colors, financial, now }) {
   );
 }
 
+function DebtModal({ colors, onClose, onSave, initial }) {
+  const [name, setName] = useState(initial?.name || '');
+  const [originalAmount, setOriginalAmount] = useState(initial?.originalAmount ?? '');
+  const [startingBalance, setStartingBalance] = useState(initial?.startingBalance ?? initial?.originalAmount ?? '');
+  const [personId, setPersonId] = useState(initial?.personId || 'shared');
+  const [startDate, setStartDate] = useState(initial?.startDate || monthKeyOf(new Date()) + '-01');
+  const [notes, setNotes] = useState(initial?.notes || '');
+  const [schedule, setSchedule] = useState(
+    initial?.interestSchedule && initial.interestSchedule.length > 0
+      ? initial.interestSchedule.map((p) => ({ ...p, effectiveUntil: p.effectiveUntil || '' }))
+      : [{ id: genId(), monthlyInterestAmount: '', interestRate: '', effectiveFrom: monthKeyOf(new Date()), effectiveUntil: '', notes: '' }]
+  );
+  const [errors, setErrors] = useState({});
+
+  function updatePeriod(id, patch) {
+    setSchedule((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  }
+  function addPeriod() {
+    setSchedule((prev) => [...prev, {
+      id: genId(), monthlyInterestAmount: '', interestRate: '',
+      effectiveFrom: monthKeyOf(new Date()), effectiveUntil: '', notes: '',
+    }]);
+  }
+  function removePeriod(id) {
+    setSchedule((prev) => (prev.length > 1 ? prev.filter((p) => p.id !== id) : prev));
+  }
+
+  function handleSave() {
+    const errs = {};
+    if (!name.trim()) errs.name = 'Name is required.';
+    if (!(Number(originalAmount) > 0)) errs.originalAmount = 'Original amount must be greater than 0.';
+    if (startingBalance === '' || Number(startingBalance) < 0) errs.startingBalance = 'Current balance is required.';
+    if (!startDate) errs.startDate = 'Start date is required.';
+    setErrors(errs);
+    if (Object.keys(errs).length > 0) return;
+    onSave({
+      id: initial?.id || genId(),
+      name: name.trim(),
+      originalAmount: Number(originalAmount),
+      startingBalance: Number(startingBalance),
+      personId, startDate, notes,
+      status: initial?.status || 'Active',
+      interestSchedule: schedule
+        .filter((p) => p.monthlyInterestAmount !== '')
+        .map((p) => ({
+          id: p.id,
+          monthlyInterestAmount: Number(p.monthlyInterestAmount || 0),
+          interestRate: p.interestRate === '' ? null : Number(p.interestRate),
+          effectiveFrom: p.effectiveFrom,
+          effectiveUntil: p.effectiveUntil || null,
+          notes: p.notes || '',
+        })),
+      createdAt: initial?.createdAt || new Date().toISOString(),
+    });
+  }
+
+  return (
+    <Modal colors={colors} onClose={onClose} title={initial ? 'Edit debt' : 'Add debt'}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div>
+          <label style={fieldLabelStyle(colors)}>Debt name</label>
+          <input
+            value={name} onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Personal Loan" style={fieldInputStyle(colors, errors.name)}
+          />
+          {errors.name && <div style={{ fontSize: 11.5, color: colors.urgent, marginTop: 4 }}>{errors.name}</div>}
+        </div>
+
+        <div style={{ display: 'flex', gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <label style={fieldLabelStyle(colors)}>Original loan amount</label>
+            <input
+              type="number" value={originalAmount} onChange={(e) => setOriginalAmount(e.target.value)}
+              style={fieldInputStyle(colors, errors.originalAmount)}
+            />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={fieldLabelStyle(colors)}>Current outstanding balance</label>
+            <input
+              type="number" value={startingBalance} onChange={(e) => setStartingBalance(e.target.value)}
+              style={fieldInputStyle(colors, errors.startingBalance)}
+            />
+          </div>
+        </div>
+        <div style={{ fontSize: 11.5, color: colors.textFaint, marginTop: -6 }}>
+          {initial
+            ? 'Payments you record from here on reduce this balance automatically — only change it directly if you need to correct a mistake.'
+            : 'If this loan already has payment history outside DailyOS, enter what\u2019s actually owed today. Future principal payments recorded here will reduce it from this number.'}
+        </div>
+
+        <div style={{ display: 'flex', gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <label style={fieldLabelStyle(colors)}>Person responsible</label>
+            <select value={personId} onChange={(e) => setPersonId(e.target.value)} style={fieldInputStyle(colors, false)}>
+              {USERS.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+            </select>
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={fieldLabelStyle(colors)}>Start date</label>
+            <input
+              type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
+              style={fieldInputStyle(colors, errors.startDate)}
+            />
+          </div>
+        </div>
+
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <label style={fieldLabelStyle(colors)}>Interest schedule</label>
+            <button
+              type="button" onClick={addPeriod}
+              style={{ fontSize: 11.5, color: colors.accent, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}
+            >+ Add period</button>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {schedule.map((p, i) => (
+              <div key={p.id} style={{ border: `1px solid ${colors.border}`, borderRadius: 9, padding: 10, background: colors.surfaceMuted }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <span style={{ fontSize: 11, color: colors.textFaint }}>Period {i + 1}</span>
+                  {schedule.length > 1 && (
+                    <button
+                      type="button" onClick={() => removePeriod(p.id)}
+                      style={{ fontSize: 11, color: colors.urgent, background: 'none', border: 'none', cursor: 'pointer' }}
+                    >Remove</button>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ ...fieldLabelStyle(colors), fontSize: 11 }}>Monthly interest (THB)</label>
+                    <input
+                      type="number" value={p.monthlyInterestAmount}
+                      onChange={(e) => updatePeriod(p.id, { monthlyInterestAmount: e.target.value })}
+                      style={{ ...fieldInputStyle(colors, false), padding: '7px 9px' }}
+                    />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ ...fieldLabelStyle(colors), fontSize: 11 }}>Rate % (optional)</label>
+                    <input
+                      type="number" value={p.interestRate}
+                      onChange={(e) => updatePeriod(p.id, { interestRate: e.target.value })}
+                      style={{ ...fieldInputStyle(colors, false), padding: '7px 9px' }}
+                    />
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ ...fieldLabelStyle(colors), fontSize: 11 }}>Effective from</label>
+                    <input
+                      type="month" value={p.effectiveFrom}
+                      onChange={(e) => updatePeriod(p.id, { effectiveFrom: e.target.value })}
+                      style={{ ...fieldInputStyle(colors, false), padding: '7px 9px' }}
+                    />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ ...fieldLabelStyle(colors), fontSize: 11 }}>Effective until (optional)</label>
+                    <input
+                      type="month" value={p.effectiveUntil}
+                      onChange={(e) => updatePeriod(p.id, { effectiveUntil: e.target.value })}
+                      style={{ ...fieldInputStyle(colors, false), padding: '7px 9px' }}
+                    />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 6 }}>
+            Add a new period whenever the monthly interest changes instead of editing an old one — that keeps a history of how interest changed over time.
+          </div>
+        </div>
+
+        <div>
+          <label style={fieldLabelStyle(colors)}>Notes (optional)</label>
+          <textarea
+            value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
+            style={{ ...fieldInputStyle(colors, false), resize: 'vertical', fontFamily: 'Inter, sans-serif' }}
+          />
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+          <button
+            onClick={handleSave}
+            style={{
+              flex: 1, padding: '10px 0', borderRadius: 9, border: 'none',
+              background: colors.textPrimary, color: colors.bg, fontSize: 13, fontWeight: 500, cursor: 'pointer',
+            }}
+          >Save debt</button>
+          <button
+            onClick={onClose}
+            style={{
+              padding: '10px 18px', borderRadius: 9, border: `1px solid ${colors.border}`,
+              background: 'transparent', color: colors.textSecondary, fontSize: 13, fontWeight: 500, cursor: 'pointer',
+            }}
+          >Cancel</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function RecordDebtPaymentModal({ colors, onClose, onSave, debt, monthKey, initial, plannedId }) {
+  const currentPeriod = currentInterestPeriod(debt.interestSchedule, monthKey);
+  const [paymentDate, setPaymentDate] = useState(initial?.paymentDate || new Date().toISOString().slice(0, 10));
+  const [interestAmount, setInterestAmount] = useState(
+    initial?.interestAmount ?? currentPeriod?.monthlyInterestAmount ?? ''
+  );
+  const [principalAmount, setPrincipalAmount] = useState(initial?.principalAmount ?? '');
+  const [paymentMethod, setPaymentMethod] = useState(initial?.paymentMethod || 'Bank');
+  const [notes, setNotes] = useState(initial?.notes || '');
+  const [errors, setErrors] = useState({});
+
+  const total = (Number(interestAmount) || 0) + (Number(principalAmount) || 0);
+
+  function handleTotalChange(value) {
+    const t = Number(value) || 0;
+    const interest = Number(interestAmount) || 0;
+    setPrincipalAmount(String(Math.max(0, t - interest)));
+  }
+
+  function handleSave() {
+    const errs = {};
+    if (!paymentDate) errs.paymentDate = 'Payment date is required.';
+    if (!(Number(interestAmount) >= 0)) errs.interestAmount = 'Enter 0 or more.';
+    if (!(Number(principalAmount) >= 0)) errs.principalAmount = 'Enter 0 or more.';
+    if (total <= 0) errs.total = 'Enter an interest or principal amount.';
+    setErrors(errs);
+    if (Object.keys(errs).length > 0) return;
+    onSave({
+      id: initial?.id || genId(),
+      debtId: debt.id,
+      paymentDate,
+      interestAmount: Number(interestAmount) || 0,
+      principalAmount: Number(principalAmount) || 0,
+      totalAmount: total,
+      paymentMethod,
+      notes,
+      expenseId: initial?.expenseId || null,
+      plannedId: plannedId || initial?.plannedId || null,
+      createdAt: initial?.createdAt || new Date().toISOString(),
+    });
+  }
+
+  return (
+    <Modal colors={colors} onClose={onClose} title={initial ? 'Edit payment' : `Record payment — ${debt.name}`}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div>
+          <label style={fieldLabelStyle(colors)}>Payment date</label>
+          <input
+            type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)}
+            style={fieldInputStyle(colors, errors.paymentDate)}
+          />
+        </div>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <label style={fieldLabelStyle(colors)}>Interest portion</label>
+            <input
+              type="number" value={interestAmount}
+              onChange={(e) => setInterestAmount(e.target.value)}
+              style={fieldInputStyle(colors, errors.interestAmount)}
+            />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={fieldLabelStyle(colors)}>Principal portion</label>
+            <input
+              type="number" value={principalAmount}
+              onChange={(e) => setPrincipalAmount(e.target.value)}
+              style={fieldInputStyle(colors, errors.principalAmount)}
+            />
+          </div>
+        </div>
+        <div>
+          <label style={fieldLabelStyle(colors)}>Total payment</label>
+          <input
+            type="number" value={total || ''}
+            onChange={(e) => handleTotalChange(e.target.value)}
+            style={fieldInputStyle(colors, errors.total)}
+          />
+          <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 4 }}>
+            Editing this keeps the interest portion fixed and adjusts principal to match.
+          </div>
+          {errors.total && <div style={{ fontSize: 11.5, color: colors.urgent, marginTop: 4 }}>{errors.total}</div>}
+        </div>
+        <div>
+          <label style={fieldLabelStyle(colors)}>Payment method</label>
+          <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)} style={fieldInputStyle(colors, false)}>
+            {PAYMENT_METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={fieldLabelStyle(colors)}>Notes (optional)</label>
+          <textarea
+            value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
+            style={{ ...fieldInputStyle(colors, false), resize: 'vertical', fontFamily: 'Inter, sans-serif' }}
+          />
+        </div>
+        <div style={{ fontSize: 11.5, color: colors.textFaint, background: colors.surfaceMuted, borderRadius: 8, padding: '8px 10px' }}>
+          The interest portion is recorded as an Interest expense. The principal portion reduces your {paymentMethod.toLowerCase()} balance directly and pays down this debt — it won't show up as a living expense.
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+          <button
+            onClick={handleSave}
+            style={{
+              flex: 1, padding: '10px 0', borderRadius: 9, border: 'none',
+              background: colors.textPrimary, color: colors.bg, fontSize: 13, fontWeight: 500, cursor: 'pointer',
+            }}
+          >Save payment</button>
+          <button
+            onClick={onClose}
+            style={{
+              padding: '10px 18px', borderRadius: 9, border: `1px solid ${colors.border}`,
+              background: 'transparent', color: colors.textSecondary, fontSize: 13, fontWeight: 500, cursor: 'pointer',
+            }}
+          >Cancel</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function PlannedPaymentModal({ colors, onClose, onSave, debt, monthKey, initial }) {
+  const currentPeriod = currentInterestPeriod(debt.interestSchedule, monthKey);
+  const [plannedDate, setPlannedDate] = useState(initial?.plannedDate || new Date().toISOString().slice(0, 10));
+  const [plannedInterestAmount, setPlannedInterestAmount] = useState(
+    initial?.plannedInterestAmount ?? currentPeriod?.monthlyInterestAmount ?? ''
+  );
+  const [plannedPrincipalAmount, setPlannedPrincipalAmount] = useState(initial?.plannedPrincipalAmount ?? '');
+  const [notes, setNotes] = useState(initial?.notes || '');
+  const [errors, setErrors] = useState({});
+
+  function handleSave() {
+    const errs = {};
+    if (!plannedDate) errs.plannedDate = 'Planned date is required.';
+    const totalPlanned = (Number(plannedInterestAmount) || 0) + (Number(plannedPrincipalAmount) || 0);
+    if (totalPlanned <= 0) errs.total = 'Enter a planned interest or principal amount.';
+    setErrors(errs);
+    if (Object.keys(errs).length > 0) return;
+    onSave({
+      id: initial?.id || genId(),
+      debtId: debt.id,
+      plannedDate,
+      plannedInterestAmount: Number(plannedInterestAmount) || 0,
+      plannedPrincipalAmount: Number(plannedPrincipalAmount) || 0,
+      status: initial?.status || 'Planned',
+      notes,
+    });
+  }
+
+  return (
+    <Modal colors={colors} onClose={onClose} title={initial ? 'Edit planned payment' : `Plan a payment — ${debt.name}`}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div>
+          <label style={fieldLabelStyle(colors)}>Planned date</label>
+          <input
+            type="date" value={plannedDate} onChange={(e) => setPlannedDate(e.target.value)}
+            style={fieldInputStyle(colors, errors.plannedDate)}
+          />
+        </div>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <label style={fieldLabelStyle(colors)}>Planned interest</label>
+            <input
+              type="number" value={plannedInterestAmount}
+              onChange={(e) => setPlannedInterestAmount(e.target.value)}
+              style={fieldInputStyle(colors, false)}
+            />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={fieldLabelStyle(colors)}>Planned principal</label>
+            <input
+              type="number" value={plannedPrincipalAmount}
+              onChange={(e) => setPlannedPrincipalAmount(e.target.value)}
+              style={fieldInputStyle(colors, false)}
+            />
+          </div>
+        </div>
+        {errors.total && <div style={{ fontSize: 11.5, color: colors.urgent }}>{errors.total}</div>}
+        <div style={{ fontSize: 11.5, color: colors.textFaint, background: colors.surfaceMuted, borderRadius: 8, padding: '8px 10px' }}>
+          This won't change your outstanding balance until you actually record it as paid.
+        </div>
+        <div>
+          <label style={fieldLabelStyle(colors)}>Notes (optional)</label>
+          <textarea
+            value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
+            style={{ ...fieldInputStyle(colors, false), resize: 'vertical', fontFamily: 'Inter, sans-serif' }}
+          />
+        </div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+          <button
+            onClick={handleSave}
+            style={{
+              flex: 1, padding: '10px 0', borderRadius: 9, border: 'none',
+              background: colors.textPrimary, color: colors.bg, fontSize: 13, fontWeight: 500, cursor: 'pointer',
+            }}
+          >Save plan</button>
+          <button
+            onClick={onClose}
+            style={{
+              padding: '10px 18px', borderRadius: 9, border: `1px solid ${colors.border}`,
+              background: 'transparent', color: colors.textSecondary, fontSize: 13, fontWeight: 500, cursor: 'pointer',
+            }}
+          >Cancel</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function DebtCard({ colors, debt, debtPayments, plannedDebtPayments, monthKey, now, financial, showToast }) {
+  const [expanded, setExpanded] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [editingDebt, setEditingDebt] = useState(false);
+  const [recordModal, setRecordModal] = useState(null); // { initial?, plannedId? } | null
+  const [planModal, setPlanModal] = useState(null); // { initial? } | null
+
+  const { setDebts, setDebtPayments, setPlannedDebtPayments, setExpenses, setBalances, categories } = financial;
+
+  const person = USERS.find((u) => u.id === debt.personId)?.name || debt.personId;
+  const outstanding = debtOutstandingBalance(debt, debtPayments);
+  const isPaidOff = outstanding <= 0;
+  const percentPaid = debt.originalAmount > 0 ? ((debt.originalAmount - outstanding) / debt.originalAmount) * 100 : 0;
+  const currentPeriod = currentInterestPeriod(debt.interestSchedule, monthKey);
+
+  const payments = debtPaymentsForDebt(debt.id, debtPayments).sort((a, b) => (a.paymentDate < b.paymentDate ? -1 : 1));
+  let running = Number(debt.startingBalance ?? debt.originalAmount ?? 0);
+  const paymentsWithRemaining = payments.map((p) => {
+    running = Math.max(0, running - Number(p.principalAmount || 0));
+    return { ...p, remainingAfter: running };
+  }).reverse();
+
+  const planned = plannedDebtPayments.filter((p) => p.debtId === debt.id).sort((a, b) => (a.plannedDate < b.plannedDate ? -1 : 1));
+
+  function interestCategoryId() {
+    const found = categories.find((c) => c.name === 'Interest');
+    return found ? found.id : categories[0]?.id;
+  }
+
+  function applyPaymentEffects(payment, sign) {
+    // sign = +1 to apply, -1 to reverse
+    if (Number(payment.principalAmount) > 0) {
+      const key = payment.paymentMethod === 'Cash' ? 'cash' : 'bank';
+      setBalances((prev) => ({
+        ...prev,
+        [key]: Number(prev[key] || 0) + sign * Number(payment.principalAmount),
+      }));
+    }
+  }
+
+  function handleRecordSave(payment) {
+    const isEdit = !!recordModal?.initial;
+    let expenseId = payment.expenseId;
+
+    if (isEdit) {
+      // reverse the old payment's effects first
+      const old = recordModal.initial;
+      applyPaymentEffects(old, -1);
+      if (old.expenseId) setExpenses((prev) => prev.filter((e) => e.id !== old.expenseId));
+      expenseId = null;
+    }
+
+    if (payment.interestAmount > 0) {
+      expenseId = genId();
+      setExpenses((prev) => [...prev, {
+        id: expenseId, personId: debt.personId, categoryId: interestCategoryId(),
+        amount: payment.interestAmount, date: payment.paymentDate, paymentMethod: payment.paymentMethod,
+        notes: `Interest — ${debt.name}`,
+      }]);
+    } else {
+      expenseId = null;
+    }
+
+    applyPaymentEffects(payment, 1);
+
+    setDebtPayments((prev) => {
+      const exists = prev.some((p) => p.id === payment.id);
+      const record = { ...payment, expenseId };
+      return exists ? prev.map((p) => (p.id === payment.id ? record : p)) : [...prev, record];
+    });
+
+    if (payment.plannedId) {
+      setPlannedDebtPayments((prev) => prev.map((p) => (p.id === payment.plannedId ? { ...p, status: 'Paid' } : p)));
+    }
+
+    setRecordModal(null);
+    showToast(isEdit ? 'Payment updated' : 'Payment recorded');
+  }
+
+  function handleDeletePayment(payment) {
+    applyPaymentEffects(payment, -1);
+    if (payment.expenseId) setExpenses((prev) => prev.filter((e) => e.id !== payment.expenseId));
+    setDebtPayments((prev) => prev.filter((p) => p.id !== payment.id));
+    showToast('Payment deleted');
+  }
+
+  function handlePlanSave(plan) {
+    setPlannedDebtPayments((prev) => {
+      const exists = prev.some((p) => p.id === plan.id);
+      return exists ? prev.map((p) => (p.id === plan.id ? plan : p)) : [...prev, plan];
+    });
+    setPlanModal(null);
+    showToast('Planned payment saved');
+  }
+  function handleCancelPlan(plan) {
+    setPlannedDebtPayments((prev) => prev.map((p) => (p.id === plan.id ? { ...p, status: 'Cancelled' } : p)));
+    showToast('Planned payment cancelled');
+  }
+  function handleDeletePlan(plan) {
+    setPlannedDebtPayments((prev) => prev.filter((p) => p.id !== plan.id));
+    showToast('Planned payment removed');
+  }
+
+  return (
+    <div style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '16px 18px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontSize: 11.5, color: colors.textFaint, marginBottom: 2 }}>{person}</div>
+          <div style={{ fontSize: 15, fontWeight: 600, color: colors.textPrimary }}>{debt.name}</div>
+        </div>
+        <StatusBadge colors={colors} tone={isPaidOff ? 'safe' : 'accent'} label={isPaidOff ? 'Paid Off' : 'Active'} />
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 14 }}>
+        <span style={{ fontSize: 20, fontWeight: 600, color: colors.textPrimary }}>{fmtCurrency(outstanding)}</span>
+        <span style={{ fontSize: 11.5, color: colors.textFaint }}>of {fmtCurrency(debt.originalAmount)} original</span>
+      </div>
+      <div style={{ height: 6, borderRadius: 999, background: colors.surfaceMuted, overflow: 'hidden', marginTop: 8 }}>
+        <div style={{ height: '100%', width: `${Math.min(100, percentPaid)}%`, background: colors.accent, borderRadius: 999 }} />
+      </div>
+      <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 4 }}>{percentPaid.toFixed(1)}% repaid</div>
+
+      <div style={{ display: 'flex', gap: 16, marginTop: 12 }}>
+        <div>
+          <div style={{ fontSize: 11, color: colors.textFaint }}>Current monthly interest</div>
+          <div style={{ fontSize: 13.5, fontWeight: 600, color: colors.textPrimary }}>
+            {currentPeriod ? fmtCurrency(currentPeriod.monthlyInterestAmount) : '—'}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 14 }}>
+        <button
+          onClick={() => setRecordModal({})}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 5, padding: '7px 12px', borderRadius: 999,
+            border: 'none', background: colors.accent, color: '#FFFFFF', fontSize: 12, fontWeight: 500, cursor: 'pointer',
+          }}
+        ><Plus size={12} /> Record payment</button>
+        <button
+          onClick={() => setPlanModal({})}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 5, padding: '7px 12px', borderRadius: 999,
+            border: `1px solid ${colors.border}`, background: 'transparent', color: colors.textSecondary, fontSize: 12, fontWeight: 500, cursor: 'pointer',
+          }}
+        ><CalendarClock size={12} /> Plan payment</button>
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          style={{
+            marginLeft: 'auto', fontSize: 12, color: colors.accent, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 500,
+          }}
+        >{expanded ? 'Hide history' : 'History'}</button>
+      </div>
+
+      {expanded && (
+        <div style={{ marginTop: 14, borderTop: `1px solid ${colors.border}`, paddingTop: 14 }}>
+          {planned.filter((p) => p.status === 'Planned').length > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11.5, fontWeight: 600, color: colors.textSecondary, marginBottom: 6 }}>Upcoming</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {planned.filter((p) => p.status === 'Planned').map((p) => (
+                  <div key={p.id} style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap',
+                    fontSize: 12, padding: '8px 10px', background: colors.upcomingSoft, borderRadius: 8,
+                  }}>
+                    <span style={{ color: colors.textPrimary }}>
+                      {p.plannedDate} · Interest {fmtCurrency(p.plannedInterestAmount)} + Principal {fmtCurrency(p.plannedPrincipalAmount)}
+                    </span>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button
+                        onClick={() => setRecordModal({ initial: {
+                          paymentDate: p.plannedDate, interestAmount: p.plannedInterestAmount,
+                          principalAmount: p.plannedPrincipalAmount, paymentMethod: 'Bank', notes: p.notes,
+                        }, plannedId: p.id })}
+                        style={{ fontSize: 11, color: colors.accent, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}
+                      >Mark paid</button>
+                      <button onClick={() => handleCancelPlan(p)} style={{ fontSize: 11, color: colors.textFaint, background: 'none', border: 'none', cursor: 'pointer' }}>Cancel</button>
+                      <button onClick={() => handleDeletePlan(p)} style={{ fontSize: 11, color: colors.urgent, background: 'none', border: 'none', cursor: 'pointer' }}>Delete</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div style={{ fontSize: 11.5, fontWeight: 600, color: colors.textSecondary, marginBottom: 6 }}>Payment history</div>
+          {paymentsWithRemaining.length === 0 ? (
+            <EmptyRow colors={colors} text="No payments recorded yet." />
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ color: colors.textFaint, textAlign: 'left' }}>
+                    <th style={{ padding: '4px 6px', fontWeight: 500 }}>Date</th>
+                    <th style={{ padding: '4px 6px', fontWeight: 500 }}>Interest</th>
+                    <th style={{ padding: '4px 6px', fontWeight: 500 }}>Principal</th>
+                    <th style={{ padding: '4px 6px', fontWeight: 500 }}>Total</th>
+                    <th style={{ padding: '4px 6px', fontWeight: 500 }}>Remaining</th>
+                    <th style={{ padding: '4px 6px' }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {paymentsWithRemaining.map((p) => (
+                    <tr key={p.id} style={{ borderTop: `1px solid ${colors.border}` }}>
+                      <td style={{ padding: '6px' }}>{p.paymentDate}</td>
+                      <td style={{ padding: '6px' }}>{fmtCurrency(p.interestAmount)}</td>
+                      <td style={{ padding: '6px' }}>{fmtCurrency(p.principalAmount)}</td>
+                      <td style={{ padding: '6px', fontWeight: 600 }}>{fmtCurrency(p.totalAmount)}</td>
+                      <td style={{ padding: '6px' }}>{fmtCurrency(p.remainingAfter)}</td>
+                      <td style={{ padding: '6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                        <button onClick={() => setRecordModal({ initial: p })} aria-label="Edit" style={{ border: 'none', background: 'none', color: colors.textFaint, cursor: 'pointer', padding: 3 }}><Pencil size={12} /></button>
+                        <button onClick={() => handleDeletePayment(p)} aria-label="Delete" style={{ border: 'none', background: 'none', color: colors.textFaint, cursor: 'pointer', padding: 3 }}><Trash2 size={12} /></button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 4, marginTop: 12, borderTop: `1px solid ${colors.border}`, paddingTop: 10 }}>
+        {confirming ? (
+          <>
+            <button
+              onClick={() => {
+                const linkedExpenseIds = debtPaymentsForDebt(debt.id, debtPayments).map((p) => p.expenseId).filter(Boolean);
+                if (linkedExpenseIds.length > 0) setExpenses((prev) => prev.filter((e) => !linkedExpenseIds.includes(e.id)));
+                setDebtPayments((prev) => prev.filter((p) => p.debtId !== debt.id));
+                setPlannedDebtPayments((prev) => prev.filter((p) => p.debtId !== debt.id));
+                setDebts((prev) => prev.filter((d) => d.id !== debt.id));
+                showToast('Debt deleted');
+              }}
+              style={{ fontSize: 11.5, color: colors.urgent, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}
+            >Delete debt</button>
+            <button onClick={() => setConfirming(false)} style={{ fontSize: 11.5, color: colors.textFaint, background: 'none', border: 'none', cursor: 'pointer' }}>Cancel</button>
+          </>
+        ) : (
+          <>
+            <button onClick={() => setEditingDebt(true)} aria-label="Edit debt" style={{ border: 'none', background: 'none', color: colors.textFaint, cursor: 'pointer', padding: 4 }}><Pencil size={13} /></button>
+            <button onClick={() => setConfirming(true)} aria-label="Delete debt" style={{ border: 'none', background: 'none', color: colors.textFaint, cursor: 'pointer', padding: 4 }}><Trash2 size={13} /></button>
+          </>
+        )}
+      </div>
+
+      {recordModal && (
+        <RecordDebtPaymentModal
+          colors={colors} debt={debt} monthKey={monthKey}
+          initial={recordModal.initial} plannedId={recordModal.plannedId}
+          onClose={() => setRecordModal(null)}
+          onSave={handleRecordSave}
+        />
+      )}
+      {planModal && (
+        <PlannedPaymentModal
+          colors={colors} debt={debt} monthKey={monthKey} initial={planModal.initial}
+          onClose={() => setPlanModal(null)}
+          onSave={handlePlanSave}
+        />
+      )}
+      {editingDebt && (
+        <DebtModal
+          colors={colors} initial={debt}
+          onClose={() => setEditingDebt(false)}
+          onSave={(updated) => {
+            setDebts((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
+            setEditingDebt(false);
+            showToast('Debt updated');
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function FinancialDebtTab({ colors, financial, now }) {
+  const { debts, setDebts, debtPayments, plannedDebtPayments, monthKey, categories } = financial;
+  const [modalOpen, setModalOpen] = useState(false);
+  const [toast, setToast] = useState('');
+
+  function showToast(text) {
+    setToast(text);
+    setTimeout(() => setToast(''), 2200);
+  }
+
+  const debtTotals = useDebtTotals({ debts, debtPayments, plannedDebtPayments, monthKey });
+  const hasInterestCategory = categories.some((c) => c.name === 'Interest');
+
+  function handleAddDebt(record) {
+    setDebts((prev) => [...prev, record]);
+    setModalOpen(false);
+    showToast('Debt added');
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+        <span style={{ fontSize: 13, color: colors.textSecondary }}>Debt & loan tracking</span>
+        <button
+          onClick={() => setModalOpen(true)}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6, padding: '9px 16px', borderRadius: 9,
+            border: 'none', background: colors.accent, color: '#FFFFFF', fontSize: 13, fontWeight: 500, cursor: 'pointer',
+          }}
+        ><Plus size={14} /> Add debt</button>
+      </div>
+
+      {!hasInterestCategory && (
+        <div style={{ fontSize: 12, color: colors.gold, background: colors.goldSoft, borderRadius: 9, padding: '10px 12px' }}>
+          Your database is missing the "Interest" expense category — re-run the latest sql/schema.sql in Supabase to add it, so interest payments can be categorized correctly.
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        <SummaryCard colors={colors} icon={CreditCard} label="Total debt remaining" value={fmtCurrency(debtTotals.totalOutstanding)} tone="urgent" />
+        <SummaryCard colors={colors} icon={TrendingUp} label="Monthly interest" value={fmtCurrency(debtTotals.monthlyInterestDue)} tone="upcoming" />
+        <SummaryCard colors={colors} icon={TrendingDown} label="Principal paid this month" value={fmtCurrency(debtTotals.principalPaidThisMonth)} tone="safe" />
+        <SummaryCard colors={colors} icon={Scale} label="Total debt payment this month" value={fmtCurrency(debtTotals.totalPaidThisMonth)} tone="accent" sub="Interest + principal paid" />
+      </div>
+
+      {debtTotals.totalOriginal > 0 && (
+        <div style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '16px 18px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: colors.textPrimary }}>Debt projection</span>
+            <span style={{ fontSize: 12, color: colors.textSecondary }}>{debtTotals.percentPaid.toFixed(1)}% of original debt repaid</span>
+          </div>
+          <div style={{ height: 8, borderRadius: 999, background: colors.surfaceMuted, overflow: 'hidden' }}>
+            <div style={{ height: '100%', width: `${Math.min(100, debtTotals.percentPaid)}%`, background: colors.safe, borderRadius: 999 }} />
+          </div>
+          {debtTotals.nextPlanned && (
+            <div style={{ fontSize: 12, color: colors.textSecondary, marginTop: 10 }}>
+              Next planned payment {debtTotals.nextPlanned.plannedDate}: principal {fmtCurrency(debtTotals.nextPlanned.plannedPrincipalAmount)} →
+              projected balance {fmtCurrency(Math.max(0, debtTotals.totalOutstanding - debtTotals.nextPlanned.plannedPrincipalAmount))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {debts.length === 0 ? (
+        <EmptyRow colors={colors} text="No debts recorded yet. Add one to start tracking interest and principal payments." />
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 14 }}>
+          {debts.map((debt) => (
+            <DebtCard
+              key={debt.id} colors={colors} debt={debt} debtPayments={debtPayments}
+              plannedDebtPayments={plannedDebtPayments} monthKey={monthKey} now={now}
+              financial={financial} showToast={showToast}
+            />
+          ))}
+        </div>
+      )}
+
+      {modalOpen && (
+        <DebtModal colors={colors} onClose={() => setModalOpen(false)} onSave={handleAddDebt} />
+      )}
+      <Toast colors={colors} text={toast} />
+    </div>
+  );
+}
+
+
 function FinancialPage({ colors, financial, now }) {
   const [tab, setTab] = useState('overview');
-  const { monthKey, setMonthKey, balances, setBalances, totals } = financial;
+  const { monthKey, setMonthKey, balances, setBalances, totals, debtTotals } = financial;
 
   return (
     <div style={{ padding: '20px 24px 40px' }}>
@@ -1918,12 +2779,13 @@ function FinancialPage({ colors, financial, now }) {
       {tab === 'overview' && (
         <FinancialOverviewTab
           colors={colors} totals={totals} monthKey={monthKey} setMonthKey={setMonthKey}
-          balances={balances} setBalances={setBalances}
+          balances={balances} setBalances={setBalances} debtTotals={debtTotals}
         />
       )}
       {tab === 'income' && <FinancialIncomeTab colors={colors} financial={financial} />}
       {tab === 'expenses' && <FinancialExpensesTab colors={colors} financial={financial} />}
       {tab === 'obligations' && <FinancialObligationsTab colors={colors} financial={financial} now={now} />}
+      {tab === 'debt' && <FinancialDebtTab colors={colors} financial={financial} now={now} />}
     </div>
   );
 }
@@ -2868,7 +3730,7 @@ function DashboardLink({ colors, onClick, children }) {
   );
 }
 
-function buildSuggestions({ totals, visas, ninetyDayReports, passports, now }) {
+function buildSuggestions({ totals, visas, ninetyDayReports, passports, debtTotals, now }) {
   const tips = [];
 
   const activeReports = ninetyDayReports.filter((r) => !r.completed);
@@ -2914,6 +3776,13 @@ function buildSuggestions({ totals, visas, ninetyDayReports, passports, now }) {
     tips.push({ tone: 'upcoming', text: `Your suggested daily spending is ${fmtCurrency(totals.dailyGuide)} — tighter than usual.` });
   }
 
+  if (debtTotals && debtTotals.nextPlanned) {
+    tips.push({
+      tone: 'upcoming',
+      text: `A principal payment of ${fmtCurrency(debtTotals.nextPlanned.plannedPrincipalAmount)} is planned for ${debtTotals.nextPlanned.plannedDate}.`,
+    });
+  }
+
   const topCategory = totals.spendingByCategory[0];
   if (topCategory && totals.totalSpending > 0) {
     const share = Math.round((topCategory.amount / totals.totalSpending) * 100);
@@ -2934,9 +3803,9 @@ function DashboardPage({ colors, now, financial, immigration, setPage }) {
   const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
   const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
 
-  const { totals } = financial;
+  const { totals, debtTotals } = financial;
   const { visas, ninetyDayReports, passports } = immigration;
-  const suggestions = buildSuggestions({ totals, visas, ninetyDayReports, passports, now });
+  const suggestions = buildSuggestions({ totals, visas, ninetyDayReports, passports, debtTotals, now });
 
   const nearestVisa = visas.length > 0
     ? [...visas].sort((a, b) => diffDays(a.expirationDate, now) - diffDays(b.expirationDate, now))[0]
@@ -2990,6 +3859,19 @@ function DashboardPage({ colors, now, financial, immigration, setPage }) {
           <SummaryCard colors={colors} icon={TrendingDown} label="Spent this month" value={fmtCurrency(totals.totalSpending)} tone="urgent" />
           <SummaryCard colors={colors} icon={Banknote} label="Daily guide" value={fmtCurrency(totals.dailyGuide)} tone="upcoming" sub={`Based on ${totals.remainingDays} days left`} />
         </div>
+        {debtTotals.totalOriginal > 0 && (
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 12 }}>
+            <SummaryCard colors={colors} icon={CreditCard} label="Outstanding debt" value={fmtCurrency(debtTotals.totalOutstanding)} tone="urgent" sub={`${debtTotals.percentPaid.toFixed(1)}% paid off`} />
+            <SummaryCard colors={colors} icon={TrendingUp} label="Interest due this month" value={fmtCurrency(debtTotals.monthlyInterestDue)} tone="upcoming" />
+            {debtTotals.nextPlanned && (
+              <SummaryCard
+                colors={colors} icon={CalendarClock} label="Next principal payment"
+                value={fmtCurrency(debtTotals.nextPlanned.plannedPrincipalAmount)}
+                tone="accent" sub={debtTotals.nextPlanned.plannedDate}
+              />
+            )}
+          </div>
+        )}
       </div>
 
       <div>
@@ -3089,12 +3971,17 @@ function DailyOSApp() {
   const [obligations, setObligations, obligationsLoaded] = useSyncedCollection('obligations');
   const [categories, setCategories, categoriesLoaded] = useSyncedCollection('categories');
   const [balances, setBalances, balancesLoaded] = useSyncedBalances();
+  const [debts, setDebts, debtsLoaded] = useSyncedCollection('debts');
+  const [debtPayments, setDebtPayments, debtPaymentsLoaded] = useSyncedCollection('debt_payments');
+  const [plannedDebtPayments, setPlannedDebtPayments, plannedDebtLoaded] = useSyncedCollection('planned_debt_payments');
   const [monthKey, setMonthKey] = useState(() => monthKeyOf(now));
 
   const totals = useFinancialTotals({ incomes, expenses, obligations, balances, categories, monthKey, now });
+  const debtTotals = useDebtTotals({ debts, debtPayments, plannedDebtPayments, monthKey });
   const financial = {
     incomes, setIncomes, expenses, setExpenses, obligations, setObligations,
     categories, setCategories, balances, setBalances, monthKey, setMonthKey, totals,
+    debts, setDebts, debtPayments, setDebtPayments, plannedDebtPayments, setPlannedDebtPayments, debtTotals,
   };
 
   const [visas, setVisas, visasLoaded] = useSyncedCollection('visas');
@@ -3106,7 +3993,8 @@ function DailyOSApp() {
   const currentTitle = NAV_ITEMS.find((n) => n.id === page)?.label || 'Dashboard';
 
   const dataLoaded = incomesLoaded && expensesLoaded && obligationsLoaded && categoriesLoaded
-    && balancesLoaded && visasLoaded && reportsLoaded && passportsLoaded;
+    && balancesLoaded && visasLoaded && reportsLoaded && passportsLoaded
+    && debtsLoaded && debtPaymentsLoaded && plannedDebtLoaded;
 
   if (stage === 'welcome') {
     return <WelcomeScreen colors={colors} dark={isDark} onEnter={() => setStage('app')} />;

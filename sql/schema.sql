@@ -1,6 +1,8 @@
--- Run this once in Supabase: Project -> SQL Editor -> New query -> paste -> Run.
--- Safe to re-run — every statement is idempotent.
+-- Run this in the Vercel Postgres "Query" tab. Safe to re-run at any time —
+-- every statement is idempotent, so pulling a newer version of DailyOS and
+-- re-running this file will only add what's missing.
 
+-- === Categories (user-editable expense categories) ===
 create table if not exists categories (
   id text primary key,
   name text not null,
@@ -79,6 +81,50 @@ create table if not exists passports (
   notes text
 );
 
+-- === Debt & loan tracking ===
+-- interest_schedule holds an array of { id, monthlyInterestAmount, interestRate,
+-- effectiveFrom, effectiveUntil, notes } periods, keyed to snake_case on the way
+-- in/out same as every other jsonb field in this app.
+create table if not exists debts (
+  id text primary key,
+  name text not null,
+  original_amount numeric not null,
+  starting_balance numeric not null,
+  person_id text not null default 'shared',
+  start_date date not null,
+  status text not null default 'Active',
+  notes text,
+  interest_schedule jsonb not null default '[]',
+  created_at timestamptz not null default now()
+);
+
+-- expense_id links to the auto-created "Interest" expense row for this payment
+-- (null when the payment was pure principal), so editing/deleting a payment can
+-- clean up its linked expense instead of leaving a duplicate behind.
+create table if not exists debt_payments (
+  id text primary key,
+  debt_id text not null references debts(id) on delete cascade,
+  payment_date date not null,
+  interest_amount numeric not null default 0,
+  principal_amount numeric not null default 0,
+  total_amount numeric not null default 0,
+  payment_method text not null default 'Bank',
+  notes text,
+  expense_id text,
+  planned_id text,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists planned_debt_payments (
+  id text primary key,
+  debt_id text not null references debts(id) on delete cascade,
+  planned_date date not null,
+  planned_interest_amount numeric not null default 0,
+  planned_principal_amount numeric not null default 0,
+  status text not null default 'Planned',
+  notes text
+);
+
 -- Seed default categories (matches the app's built-in list) and a starting balances row.
 insert into categories (id, name, active) values
   ('cat_0', 'Allowance for Parents', true),
@@ -94,7 +140,8 @@ insert into categories (id, name, active) values
   ('cat_10', 'Shopping', true),
   ('cat_11', 'Entertainment', true),
   ('cat_12', 'Healthcare', true),
-  ('cat_13', 'Other', true)
+  ('cat_13', 'Other', true),
+  ('cat_14', 'Interest', true)
 on conflict (id) do nothing;
 
 insert into balances (id, cash, bank) values (1, 0, 0)
@@ -112,12 +159,18 @@ alter table balances enable row level security;
 alter table visas enable row level security;
 alter table ninety_day_reports enable row level security;
 alter table passports enable row level security;
+alter table debts enable row level security;
+alter table debt_payments enable row level security;
+alter table planned_debt_payments enable row level security;
 
 do $$
 declare
   t text;
 begin
-  foreach t in array array['categories','incomes','expenses','obligations','balances','visas','ninety_day_reports','passports']
+  foreach t in array array[
+    'categories','incomes','expenses','obligations','balances','visas',
+    'ninety_day_reports','passports','debts','debt_payments','planned_debt_payments'
+  ]
   loop
     execute format('drop policy if exists "authenticated_all" on %I;', t);
     execute format(
