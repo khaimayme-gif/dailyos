@@ -4058,13 +4058,29 @@ function DailyOSApp() {
   // no backend cron here (this is a static site), so this runs as a
   // practical equivalent: the moment the app is open on or after the due
   // day, and it hasn't already been recorded for this month.
+  //
+  // This should only catch up obligations that already existed before this
+  // session (e.g. rent that came due while the app was closed) — not ones
+  // the user just created with a due date earlier in the current month,
+  // which would otherwise get silently marked "Paid" the instant they're
+  // added. So we snapshot the obligation ids present at initial load and
+  // only auto-record against that snapshot.
   const autoPaidRef = useRef(new Set());
-  const autoPaidRef = useRef(new Set());
+  const knownObligationIdsRef = useRef(null);
   useEffect(() => {
     if (!dataLoaded) return;
+    if (knownObligationIdsRef.current === null) {
+      knownObligationIdsRef.current = new Set(obligations.map((o) => o.id));
+    }
+  }, [dataLoaded, obligations]);
+
+  useEffect(() => {
+    if (!dataLoaded) return;
+    if (!knownObligationIdsRef.current) return;
     const currentMonthKey = monthKeyOf(now);
 
     obligations.forEach((o) => {
+      if (!knownObligationIdsRef.current.has(o.id)) return; // added this session, don't auto-pay
       if (o.active === false) return;
       if (o.frequency !== 'Monthly') return;
       if (!obligationAppliesToMonth(o, currentMonthKey)) return;
@@ -4074,8 +4090,17 @@ function DailyOSApp() {
 
       const dueDateStr = dueDateForMonth(o, currentMonthKey);
       if (diffDays(dueDateStr, now) > 0) return; // not due yet this month
-      ...
-      setExpenses((prev) => [...prev, { ... }]);
+
+      const sessionKey = `${o.id}:${currentMonthKey}`;
+      if (autoPaidRef.current.has(sessionKey)) return;
+      autoPaidRef.current.add(sessionKey);
+
+      const expenseId = genId();
+      setExpenses((prev) => [...prev, {
+        id: expenseId, personId: o.personId, categoryId: o.categoryId,
+        amount: o.amount, date: dueDateStr, paymentMethod: 'Bank',
+        notes: `Auto-recorded from obligation: ${o.name}`,
+      }]);
       setObligations((prev) => prev.map((item) => (item.id === o.id ? {
         ...item,
         paidMonths: [...(item.paidMonths || []), currentMonthKey],
