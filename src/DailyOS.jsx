@@ -256,7 +256,7 @@ function SidebarContent({ colors, page, setPage, dark: isDark, setDark, closeMob
 
       <div style={{ padding: '16px 20px 20px', borderTop: `1px solid ${colors.border}` }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-          <HouseholdMark colors={colors} size={30} />
+          <img src="/logo.png" alt="DailyOS" style={{ height: 30 }} />
           <div>
             <div style={{ fontSize: 13, fontWeight: 600, color: colors.textPrimary }}>{personName}</div>
             <div style={{ fontSize: 11, color: colors.textFaint }}>{email}</div>
