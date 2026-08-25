@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { LogOut } from 'lucide-react';
 import { supabase } from './supabaseClient';
+import Logo from './Logo';
 
 // Maps the two Supabase Auth accounts (one per person) to the app's
 // internal personId. Set these in your .env.local / Vercel env vars to

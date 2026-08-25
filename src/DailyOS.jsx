@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import LoginGate, { SignOutButton, useCurrentUser } from './lib/LoginGate';
 import { useSyncedCollection, useSyncedBalances } from './lib/sync';
+import Logo from './lib/Logo';
 
 const FONT_IMPORT = "@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;1,9..144,500&family=Inter:wght@400;500;600&display=swap');";
 
@@ -256,7 +257,7 @@ function SidebarContent({ colors, page, setPage, dark: isDark, setDark, closeMob
 
       <div style={{ padding: '16px 20px 20px', borderTop: `1px solid ${colors.border}` }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-          <img src="/logo.png" alt="DailyOS" style={{ height: 30 }} />
+          <HouseholdMark colors={colors} size={30} />
           <div>
             <div style={{ fontSize: 13, fontWeight: 600, color: colors.textPrimary }}>{personName}</div>
             <div style={{ fontSize: 11, color: colors.textFaint }}>{email}</div>
