@@ -6,7 +6,7 @@ import {
   Plus, Pencil, Trash2, Check, CalendarDays, Fingerprint, Eye, EyeOff, ClipboardList, History,
   CreditCard, CalendarClock,
 } from 'lucide-react';
-import LoginGate, { SignOutButton } from './lib/LoginGate';
+import LoginGate, { SignOutButton, useCurrentUser } from './lib/LoginGate';
 import { useSyncedCollection, useSyncedBalances } from './lib/sync';
 
 const FONT_IMPORT = "@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;1,9..144,500&family=Inter:wght@400;500;600&display=swap');";
@@ -218,6 +218,7 @@ function WelcomeScreen({ colors, dark: isDark, onEnter }) {
 }
 
 function SidebarContent({ colors, page, setPage, dark: isDark, setDark, closeMobile }) {
+  const { personName, email } = useCurrentUser();
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', fontFamily: 'Inter, sans-serif' }}>
       <div style={{ padding: '24px 20px 20px' }}>
@@ -257,8 +258,8 @@ function SidebarContent({ colors, page, setPage, dark: isDark, setDark, closeMob
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
           <HouseholdMark colors={colors} size={30} />
           <div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: colors.textPrimary }}>Alex &amp; Miki</div>
-            <div style={{ fontSize: 11, color: colors.textFaint }}>Shared household</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: colors.textPrimary }}>{personName}</div>
+            <div style={{ fontSize: 11, color: colors.textFaint }}>{email}</div>
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -1076,7 +1077,8 @@ function FilterPills({ colors, options, value, onChange }) {
 }
 
 function IncomeModal({ colors, onClose, onSave, initial }) {
-  const [personId, setPersonId] = useState(initial?.personId || 'miki');
+  const { personId: currentPersonId } = useCurrentUser();
+  const personId = initial?.personId || currentPersonId;
   const [type, setType] = useState(initial?.type || INCOME_TYPES[0]);
   const [amount, setAmount] = useState(initial?.amount ?? '');
   const [date, setDate] = useState(initial?.date || monthKeyOf(new Date()) + '-01');
@@ -1087,7 +1089,6 @@ function IncomeModal({ colors, onClose, onSave, initial }) {
     const errs = {};
     if (!(Number(amount) > 0)) errs.amount = 'Amount must be greater than 0.';
     if (!date) errs.date = 'Date is required.';
-    if (!personId) errs.personId = 'Person is required.';
     if (!type) errs.type = 'Income type is required.';
     setErrors(errs);
     if (Object.keys(errs).length > 0) return;
@@ -1100,12 +1101,6 @@ function IncomeModal({ colors, onClose, onSave, initial }) {
   return (
     <Modal colors={colors} onClose={onClose} title={initial ? 'Edit income' : 'Add income'}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <div>
-          <label style={fieldLabelStyle(colors)}>Person</label>
-          <select value={personId} onChange={(e) => setPersonId(e.target.value)} style={fieldInputStyle(colors, errors.personId)}>
-            {USERS.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-          </select>
-        </div>
         <div>
           <label style={fieldLabelStyle(colors)}>Income type</label>
           <select value={type} onChange={(e) => setType(e.target.value)} style={fieldInputStyle(colors, errors.type)}>
@@ -1312,7 +1307,8 @@ function FinancialIncomeTab({ colors, financial }) {
 
 function ExpenseModal({ colors, onClose, onSave, initial, categories, obligations = [] }) {
   const activeCats = categories.filter((c) => c.active);
-  const [personId, setPersonId] = useState(initial?.personId || 'miki');
+  const { personId: currentPersonId } = useCurrentUser();
+  const personId = initial?.personId || currentPersonId;
   const [categoryId, setCategoryId] = useState(initial?.categoryId || activeCats[0]?.id || '');
   const [amount, setAmount] = useState(initial?.amount ?? '');
   const [date, setDate] = useState(initial?.date || monthKeyOf(new Date()) + '-01');
@@ -1346,7 +1342,6 @@ function ExpenseModal({ colors, onClose, onSave, initial, categories, obligation
     const errs = {};
     if (!(Number(amount) > 0)) errs.amount = 'Amount must be greater than 0.';
     if (!date) errs.date = 'Date is required.';
-    if (!personId) errs.personId = 'Person is required.';
     if (!categoryId) errs.categoryId = 'Category is required.';
     if (!paymentMethod) errs.paymentMethod = 'Payment method is required.';
     setErrors(errs);
@@ -1360,12 +1355,6 @@ function ExpenseModal({ colors, onClose, onSave, initial, categories, obligation
   return (
     <Modal colors={colors} onClose={onClose} title={initial ? 'Edit expense' : 'Add expense'}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <div>
-          <label style={fieldLabelStyle(colors)}>Person</label>
-          <select value={personId} onChange={(e) => setPersonId(e.target.value)} style={fieldInputStyle(colors, errors.personId)}>
-            {USERS.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-          </select>
-        </div>
         <div>
           <label style={fieldLabelStyle(colors)}>Category</label>
           <select value={categoryId} onChange={(e) => handleCategoryChange(e.target.value)} style={fieldInputStyle(colors, errors.categoryId)}>
@@ -1716,8 +1705,9 @@ function FinancialExpensesTab({ colors, financial }) {
 }
 
 function ObligationModal({ colors, onClose, onSave, initial, categories }) {
+  const { personId: currentPersonId } = useCurrentUser();
   const [name, setName] = useState(initial?.name || '');
-  const [personId, setPersonId] = useState(initial?.personId || 'shared');
+  const [isShared, setIsShared] = useState(initial ? initial.personId === 'shared' : true);
   const [categoryId, setCategoryId] = useState(initial?.categoryId || categories[0]?.id || '');
   const [amount, setAmount] = useState(initial?.amount ?? '');
   const [frequency, setFrequency] = useState(initial?.frequency || 'Monthly');
@@ -1725,13 +1715,13 @@ function ObligationModal({ colors, onClose, onSave, initial, categories }) {
   const [active, setActive] = useState(initial?.active !== false);
   const [notes, setNotes] = useState(initial?.notes || '');
   const [errors, setErrors] = useState({});
+  const personId = isShared ? 'shared' : currentPersonId;
 
   function handleSave() {
     const errs = {};
     if (!name.trim()) errs.name = 'Name is required.';
     if (!(Number(amount) > 0)) errs.amount = 'Amount must be greater than 0.';
     if (!categoryId) errs.categoryId = 'Category is required.';
-    if (!personId) errs.personId = 'Person is required.';
     if (!dueDate) errs.dueDate = 'Payment date is required.';
     setErrors(errs);
     if (Object.keys(errs).length > 0) return;
@@ -1768,12 +1758,15 @@ function ObligationModal({ colors, onClose, onSave, initial, categories }) {
             {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>
-        <div>
-          <label style={fieldLabelStyle(colors)}>Person</label>
-          <select value={personId} onChange={(e) => setPersonId(e.target.value)} style={fieldInputStyle(colors, errors.personId)}>
-            {USERS.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-          </select>
-        </div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: colors.textPrimary, cursor: 'pointer' }}>
+          <input type="checkbox" checked={isShared} onChange={(e) => setIsShared(e.target.checked)} />
+          Shared between Miki and Alex
+        </label>
+        {!isShared && (
+          <div style={{ fontSize: 11.5, color: colors.textFaint, marginTop: -8 }}>
+            Will be assigned to you.
+          </div>
+        )}
         <div>
           <label style={fieldLabelStyle(colors)}>Frequency</label>
           <select value={frequency} onChange={(e) => setFrequency(e.target.value)} style={fieldInputStyle(colors, false)}>
@@ -1936,6 +1929,7 @@ function FinancialObligationsTab({ colors, financial }) {
 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
         <SummaryCard colors={colors} icon={ListChecks} label="Total commitments" value={fmtCurrency(totalCommitments)} tone="upcoming" />
+        <SummaryCard colors={colors} icon={Scale} label="Spendable money" value={fmtCurrency(totals.spendableMoney)} tone="accent" sub="Total available − unpaid this month" />
       </div>
 
       <div style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '16px 18px' }}>
@@ -1972,10 +1966,11 @@ function FinancialObligationsTab({ colors, financial }) {
 }
 
 function DebtModal({ colors, onClose, onSave, initial }) {
+  const { personId: currentPersonId } = useCurrentUser();
   const [name, setName] = useState(initial?.name || '');
   const [originalAmount, setOriginalAmount] = useState(initial?.originalAmount ?? '');
   const [startingBalance, setStartingBalance] = useState(initial?.startingBalance ?? initial?.originalAmount ?? '');
-  const [personId, setPersonId] = useState(initial?.personId || 'shared');
+  const [isShared, setIsShared] = useState(initial ? initial.personId === 'shared' : true);
   const [debtType, setDebtType] = useState(initial?.debtType || 'Short-term');
   const [startDate, setStartDate] = useState(initial?.startDate || monthKeyOf(new Date()) + '-01');
   const [notes, setNotes] = useState(initial?.notes || '');
@@ -1985,6 +1980,7 @@ function DebtModal({ colors, onClose, onSave, initial }) {
       : [{ id: genId(), monthlyInterestAmount: '', interestRate: '', effectiveFrom: monthKeyOf(new Date()), effectiveUntil: '', notes: '' }]
   );
   const [errors, setErrors] = useState({});
+  const personId = isShared ? 'shared' : currentPersonId;
 
   function updatePeriod(id, patch) {
     setSchedule((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
@@ -2062,12 +2058,17 @@ function DebtModal({ colors, onClose, onSave, initial }) {
             : 'If this loan already has payment history outside DailyOS, enter what\u2019s actually owed today. Future principal payments recorded here will reduce it from this number.'}
         </div>
 
-        <div style={{ display: 'flex', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
           <div style={{ flex: 1 }}>
-            <label style={fieldLabelStyle(colors)}>Person responsible</label>
-            <select value={personId} onChange={(e) => setPersonId(e.target.value)} style={fieldInputStyle(colors, false)}>
-              {USERS.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-            </select>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: colors.textPrimary, cursor: 'pointer', height: 38 }}>
+              <input type="checkbox" checked={isShared} onChange={(e) => setIsShared(e.target.checked)} />
+              Shared between Miki and Alex
+            </label>
+            {!isShared && (
+              <div style={{ fontSize: 11.5, color: colors.textFaint, marginTop: 4 }}>
+                Will be assigned to you.
+              </div>
+            )}
           </div>
           <div style={{ flex: 1 }}>
             <label style={fieldLabelStyle(colors)}>Start date</label>
@@ -2807,7 +2808,8 @@ const IMMIGRATION_TABS = [
 ];
 
 function VisaModal({ colors, onClose, onSave, initial }) {
-  const [personId, setPersonId] = useState(initial?.personId || 'miki');
+  const { personId: currentPersonId } = useCurrentUser();
+  const personId = initial?.personId || currentPersonId;
   const [visaType, setVisaType] = useState(initial?.visaType || '');
   const [startDate, setStartDate] = useState(initial?.startDate || '');
   const [expirationDate, setExpirationDate] = useState(initial?.expirationDate || '');
@@ -2819,7 +2821,6 @@ function VisaModal({ colors, onClose, onSave, initial }) {
 
   function handleSave() {
     const errs = {};
-    if (!personId) errs.personId = 'Person is required.';
     if (!visaType.trim()) errs.visaType = 'Visa type is required.';
     if (!startDate) errs.startDate = 'Start date is required.';
     if (!expirationDate) errs.expirationDate = 'Expiration date is required.';
@@ -2836,12 +2837,6 @@ function VisaModal({ colors, onClose, onSave, initial }) {
   return (
     <Modal colors={colors} onClose={onClose} title={initial ? 'Edit visa' : 'Add visa'}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <div>
-          <label style={fieldLabelStyle(colors)}>Person</label>
-          <select value={personId} onChange={(e) => setPersonId(e.target.value)} style={fieldInputStyle(colors, errors.personId)}>
-            {USERS.filter((u) => u.id !== 'shared').map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-          </select>
-        </div>
         <div>
           <label style={fieldLabelStyle(colors)}>Visa type</label>
           <input
@@ -3224,8 +3219,8 @@ function ImmigrationVisaTab({ colors, visas, setVisas, now }) {
   );
 }
 
-function NinetyDayModal({ colors, onClose, onSave, personId: lockedPersonId }) {
-  const [personId, setPersonId] = useState(lockedPersonId || 'miki');
+function NinetyDayModal({ colors, onClose, onSave }) {
+  const { personId } = useCurrentUser();
   const [lastReportDate, setLastReportDate] = useState('');
   const [nextDueDate, setNextDueDate] = useState('');
   const [notes, setNotes] = useState('');
@@ -3235,9 +3230,8 @@ function NinetyDayModal({ colors, onClose, onSave, personId: lockedPersonId }) {
 
   function handleSave() {
     const errs = {};
-    if (!personId) errs.personId = 'Person is required.';
     if (!lastReportDate) errs.lastReportDate = 'Last report date is required.';
-    if (!nextDueDate) errs.nextDueDate = 'Next due date is required.';
+    if (!nextDueDate && !suggested) errs.nextDueDate = 'Next due date is required.';
     setErrors(errs);
     if (Object.keys(errs).length > 0) return;
     onSave({
@@ -3249,14 +3243,6 @@ function NinetyDayModal({ colors, onClose, onSave, personId: lockedPersonId }) {
   return (
     <Modal colors={colors} onClose={onClose} title="Add 90-day report">
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        {!lockedPersonId && (
-          <div>
-            <label style={fieldLabelStyle(colors)}>Person</label>
-            <select value={personId} onChange={(e) => setPersonId(e.target.value)} style={fieldInputStyle(colors, errors.personId)}>
-              {USERS.filter((u) => u.id !== 'shared').map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-            </select>
-          </div>
-        )}
         <div>
           <label style={fieldLabelStyle(colors)}>Last report date</label>
           <input
@@ -3475,8 +3461,9 @@ function ImmigrationNinetyDayTab({ colors, ninetyDayReports, setNinetyDayReports
   );
 }
 
-function PassportModal({ colors, onClose, onSave, initial, personId: lockedPersonId }) {
-  const [personId, setPersonId] = useState(initial?.personId || lockedPersonId || 'miki');
+function PassportModal({ colors, onClose, onSave, initial }) {
+  const { personId: currentPersonId } = useCurrentUser();
+  const personId = initial?.personId || currentPersonId;
   const [passportNumber, setPassportNumber] = useState(initial?.passportNumber || '');
   const [issueDate, setIssueDate] = useState(initial?.issueDate || '');
   const [expirationDate, setExpirationDate] = useState(initial?.expirationDate || '');
@@ -3485,7 +3472,6 @@ function PassportModal({ colors, onClose, onSave, initial, personId: lockedPerso
 
   function handleSave() {
     const errs = {};
-    if (!personId) errs.personId = 'Person is required.';
     if (!issueDate) errs.issueDate = 'Issue date is required.';
     if (!expirationDate) errs.expirationDate = 'Expiration date is required.';
     setErrors(errs);
@@ -3499,14 +3485,6 @@ function PassportModal({ colors, onClose, onSave, initial, personId: lockedPerso
   return (
     <Modal colors={colors} onClose={onClose} title={initial ? 'Edit passport' : 'Add passport'}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        {!lockedPersonId && (
-          <div>
-            <label style={fieldLabelStyle(colors)}>Person</label>
-            <select value={personId} onChange={(e) => setPersonId(e.target.value)} style={fieldInputStyle(colors, errors.personId)}>
-              {USERS.filter((u) => u.id !== 'shared').map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-            </select>
-          </div>
-        )}
         <div style={{ display: 'flex', gap: 10 }}>
           <div style={{ flex: 1 }}>
             <label style={fieldLabelStyle(colors)}>Issue date</label>

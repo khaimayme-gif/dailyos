@@ -1,6 +1,27 @@
-import { useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useState } from 'react';
 import { LogOut } from 'lucide-react';
 import { supabase } from './supabaseClient';
+
+// Maps the two Supabase Auth accounts (one per person) to the app's
+// internal personId. Set these in your .env.local / Vercel env vars to
+// match the two accounts you create in Supabase Authentication → Users.
+const MIKI_EMAIL = (import.meta.env.VITE_MIKI_EMAIL || '').toLowerCase();
+const ALEX_EMAIL = (import.meta.env.VITE_ALEX_EMAIL || '').toLowerCase();
+const PERSON_NAMES = { miki: 'Miki', alex: 'Alex' };
+
+function personIdForEmail(email) {
+  const e = (email || '').toLowerCase();
+  if (MIKI_EMAIL && e === MIKI_EMAIL) return 'miki';
+  if (ALEX_EMAIL && e === ALEX_EMAIL) return 'alex';
+  return null;
+}
+
+const CurrentUserContext = createContext({ personId: null, personName: null, email: null });
+
+/** Read who's currently signed in anywhere inside <LoginGate>. */
+export function useCurrentUser() {
+  return useContext(CurrentUserContext);
+}
 
 const FONT_IMPORT =
   "@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;1,9..144,500&family=Inter:wght@400;500;600&display=swap');";
@@ -199,5 +220,28 @@ export default function LoginGate({ children }) {
     return <LoginForm onSignedIn={() => {}} />;
   }
 
-  return children;
+  const email = session.user?.email || '';
+  const personId = personIdForEmail(email);
+
+  if (!personId) {
+    return (
+      <div style={{ minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: colors.bg, fontFamily: 'Inter, sans-serif', padding: 20 }}>
+        <div style={{ maxWidth: 380, textAlign: 'center' }}>
+          <div style={{ color: colors.urgent, fontSize: 13.5, fontWeight: 600, marginBottom: 8 }}>
+            This account isn't recognized
+          </div>
+          <p style={{ color: colors.textSecondary, fontSize: 13, lineHeight: 1.6 }}>
+            Signed in as {email}, but this doesn't match VITE_MIKI_EMAIL or VITE_ALEX_EMAIL in your environment variables. Update those to match this account, or sign out and use the correct one.
+          </p>
+          <SignOutButton style={{ width: 'auto', padding: '9px 16px', marginTop: 14 }} />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <CurrentUserContext.Provider value={{ personId, personName: PERSON_NAMES[personId], email }}>
+      {children}
+    </CurrentUserContext.Provider>
+  );
 }
