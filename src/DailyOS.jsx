@@ -3241,7 +3241,7 @@ function NinetyDayModal({ colors, onClose, onSave, personId: lockedPersonId }) {
     setErrors(errs);
     if (Object.keys(errs).length > 0) return;
     onSave({
-      id: genId(), personId, lastReportDate, nextDueDate, notes,
+      id: genId(), personId, lastReportDate, nextDueDate: nextDueDate || suggested, notes,
       completed: false, completedDate: null, createdAt: new Date().toISOString(),
     });
   }
@@ -3261,16 +3261,13 @@ function NinetyDayModal({ colors, onClose, onSave, personId: lockedPersonId }) {
           <label style={fieldLabelStyle(colors)}>Last report date</label>
           <input
             type="date" value={lastReportDate}
-            onChange={(e) => {
-              setLastReportDate(e.target.value);
-              if (!nextDueDate) setNextDueDate(addDays(e.target.value, 90));
-            }}
+            onChange={(e) => setLastReportDate(e.target.value)}
             style={fieldInputStyle(colors, errors.lastReportDate)}
           />
         </div>
         <div>
           <label style={fieldLabelStyle(colors)}>Next due date</label>
-          <input type="date" value={nextDueDate} onChange={(e) => setNextDueDate(e.target.value)} style={fieldInputStyle(colors, errors.nextDueDate)} />
+          <input type="date" value={nextDueDate || suggested} onChange={(e) => setNextDueDate(e.target.value)} style={fieldInputStyle(colors, errors.nextDueDate)} />
           {suggested && (
             <div style={{ fontSize: 11.5, color: colors.textFaint, marginTop: 4 }}>
               Suggested date: {suggested} (based on the date you entered — override if your official due date differs)
