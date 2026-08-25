@@ -83,17 +83,8 @@ function LoginForm({ onSignedIn }) {
           padding: '30px 28px',
         }}
       >
-        <div
-          style={{
-            fontFamily: 'Fraunces, serif',
-            fontStyle: 'italic',
-            fontWeight: 500,
-            fontSize: 26,
-            color: colors.textPrimary,
-            marginBottom: 4,
-          }}
-        >
-          DailyOS
+        <div style={{ marginBottom: 4 }}>
+          <Logo height={26} />
         </div>
         <p style={{ color: colors.textSecondary, fontSize: 13, margin: '0 0 24px' }}>
           Sign in to your household dashboard.
