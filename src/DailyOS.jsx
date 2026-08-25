@@ -421,7 +421,7 @@ const FINANCIAL_TABS = [
   { id: 'overview', label: 'Overview', icon: Scale },
   { id: 'income', label: 'Income', icon: TrendingUp },
   { id: 'expenses', label: 'Expenses', icon: Receipt },
-  { id: 'obligations', label: 'Obligations', icon: ListChecks },
+  { id: 'obligations', label: 'Commitments', icon: ListChecks },
   { id: 'debt', label: 'Debt', icon: CreditCard },
 ];
 
@@ -477,6 +477,15 @@ function dueDateForMonth(o, monthKey) {
     return `${my}-${String(om).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
   }
   return o.dueDate;
+}
+function paymentScheduleLabel(o) {
+  const [, m, d] = o.dueDate.split('-').map(Number);
+  if (o.frequency === 'Monthly' || o.frequency === 'Weekly') return `Day ${d} of each month`;
+  if (o.frequency === 'Yearly') {
+    const monthName = new Date(2000, m - 1, 1).toLocaleDateString('en-US', { month: 'long' });
+    return `${monthName} ${d} every year`;
+  }
+  return `One-time on ${o.dueDate}`;
 }
 function obligationAppliesToMonth(o, monthKey) {
   // The month the obligation's due date was originally set in — recurring
@@ -1373,7 +1382,7 @@ function ExpenseModal({ colors, onClose, onSave, initial, categories, obligation
           {errors.amount && <div style={{ fontSize: 11.5, color: colors.urgent, marginTop: 4 }}>{errors.amount}</div>}
           {amountSource === 'obligation' && matchedObligation && (
             <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 4 }}>
-              Auto-filled from your "{matchedObligation.name}" obligation — edit if this month is different.
+              Auto-filled from your "{matchedObligation.name}" commitment — edit if this month is different.
             </div>
           )}
         </div>
@@ -1723,7 +1732,7 @@ function ObligationModal({ colors, onClose, onSave, initial, categories }) {
     if (!(Number(amount) > 0)) errs.amount = 'Amount must be greater than 0.';
     if (!categoryId) errs.categoryId = 'Category is required.';
     if (!personId) errs.personId = 'Person is required.';
-    if (!dueDate) errs.dueDate = 'Due date is required.';
+    if (!dueDate) errs.dueDate = 'Payment date is required.';
     setErrors(errs);
     if (Object.keys(errs).length > 0) return;
     onSave({
@@ -1735,7 +1744,7 @@ function ObligationModal({ colors, onClose, onSave, initial, categories }) {
   }
 
   return (
-    <Modal colors={colors} onClose={onClose} title={initial ? 'Edit obligation' : 'Add obligation'}>
+    <Modal colors={colors} onClose={onClose} title={initial ? 'Edit commitment' : 'Add commitment'}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div>
           <label style={fieldLabelStyle(colors)}>Name</label>
@@ -1772,7 +1781,7 @@ function ObligationModal({ colors, onClose, onSave, initial, categories }) {
           </select>
         </div>
         <div>
-          <label style={fieldLabelStyle(colors)}>Due date</label>
+          <label style={fieldLabelStyle(colors)}>Payment date</label>
           <input
             type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)}
             style={fieldInputStyle(colors, errors.dueDate)}
@@ -1803,7 +1812,7 @@ function ObligationModal({ colors, onClose, onSave, initial, categories }) {
               flex: 1, padding: '10px 0', borderRadius: 9, border: 'none',
               background: colors.textPrimary, color: colors.bg, fontSize: 13, fontWeight: 500, cursor: 'pointer',
             }}
-          >Save obligation</button>
+          >Save commitment</button>
           <button
             onClick={onClose}
             style={{
@@ -1829,11 +1838,9 @@ function StatusBadge({ colors, tone, label }) {
   );
 }
 
-function ObligationRow({ colors, o, monthKey, now, categoryName, onEdit, onDelete, onTogglePaid }) {
+function ObligationRow({ colors, o, categoryName, onEdit, onDelete }) {
   const [confirming, setConfirming] = useState(false);
   const person = USERS.find((u) => u.id === o.personId)?.name || o.personId;
-  const status = obligationStatus(o, monthKey, now);
-  const isPaid = status.label === 'Paid';
 
   return (
     <div style={{
@@ -1849,26 +1856,15 @@ function ObligationRow({ colors, o, monthKey, now, categoryName, onEdit, onDelet
       <div style={{ fontSize: 13.5, fontWeight: 600, color: colors.textPrimary, minWidth: 80, textAlign: 'right' }}>
         {fmtCurrency(o.amount)}
       </div>
-      <div style={{ minWidth: 120, textAlign: 'right' }}>
-        <StatusBadge colors={colors} tone={status.tone} label={status.label} />
-        <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 3 }}>
-          {isPaid ? `Due ${status.dueDateStr}` : status.daysUntil < 0
-            ? `${Math.abs(status.daysUntil)}d overdue`
-            : status.daysUntil === 0 ? 'Due today' : `Due in ${status.daysUntil}d`}
+      <div style={{ minWidth: 140, textAlign: 'right' }}>
+        <div style={{ fontSize: 11.5, color: colors.textSecondary }}>
+          {paymentScheduleLabel(o)}
         </div>
+        {o.active === false && (
+          <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 2 }}>Inactive</div>
+        )}
       </div>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-        <button
-          onClick={() => onTogglePaid(o)}
-          style={{
-            fontSize: 11.5, fontWeight: 600, padding: '6px 10px', borderRadius: 999, cursor: 'pointer',
-            border: `1px solid ${isPaid ? colors.border : colors.accent}`,
-            background: isPaid ? 'transparent' : colors.accentSoft,
-            color: isPaid ? colors.textSecondary : colors.accent,
-          }}
-        >
-          {isPaid ? 'Mark unpaid' : 'Mark as paid'}
-        </button>
         {confirming ? (
           <>
             <button onClick={() => onDelete(o.id)} style={{ fontSize: 11.5, color: colors.urgent, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}>Delete</button>
@@ -1885,11 +1881,10 @@ function ObligationRow({ colors, o, monthKey, now, categoryName, onEdit, onDelet
   );
 }
 
-function FinancialObligationsTab({ colors, financial, now }) {
-  const { obligations, setObligations, expenses, setExpenses, categories, monthKey, totals } = financial;
+function FinancialObligationsTab({ colors, financial }) {
+  const { obligations, setObligations, categories, totals } = financial;
   const [modalOpen, setModalOpen] = useState(false);
   const [editRecord, setEditRecord] = useState(null);
-  const [statusFilter, setStatusFilter] = useState('All');
   const [toast, setToast] = useState('');
 
   function showToast(text) {
@@ -1904,66 +1899,28 @@ function FinancialObligationsTab({ colors, financial, now }) {
     });
     setModalOpen(false);
     setEditRecord(null);
-    showToast(editRecord ? 'Obligation updated' : 'Obligation added');
+    showToast(editRecord ? 'Commitment updated' : 'Commitment added');
   }
   function handleDelete(id) {
-    const target = obligations.find((r) => r.id === id);
-    const linkedIds = (target?.linkedExpenses || []).map((l) => l.expenseId);
-    if (linkedIds.length > 0) {
-      setExpenses((prev) => prev.filter((e) => !linkedIds.includes(e.id)));
-    }
+    // Commitments are just a template. Expenses already auto-recorded from
+    // this commitment stay in Expenses as history, this only removes the
+    // template so nothing further gets recorded from it going forward.
     setObligations((prev) => prev.filter((r) => r.id !== id));
-    showToast('Obligation deleted');
-  }
-  function handleTogglePaid(o) {
-    const paidMonths = o.paidMonths || [];
-    const linked = o.linkedExpenses || [];
-    const has = paidMonths.includes(monthKey);
-
-    if (has) {
-      const link = linked.find((l) => l.monthKey === monthKey);
-      if (link) setExpenses((prev) => prev.filter((e) => e.id !== link.expenseId));
-      setObligations((prev) => prev.map((item) => (item.id === o.id ? {
-        ...item,
-        paidMonths: paidMonths.filter((m) => m !== monthKey),
-        linkedExpenses: linked.filter((l) => l.monthKey !== monthKey),
-      } : item)));
-      showToast('Marked as unpaid');
-    } else {
-      const expenseId = genId();
-      const dueDateStr = dueDateForMonth(o, monthKey);
-      setExpenses((prev) => [...prev, {
-        id: expenseId, personId: o.personId, categoryId: o.categoryId,
-        amount: o.amount, date: dueDateStr, paymentMethod: 'Bank',
-        notes: `Auto-recorded from obligation: ${o.name}`,
-      }]);
-      setObligations((prev) => prev.map((item) => (item.id === o.id ? {
-        ...item,
-        paidMonths: [...paidMonths, monthKey],
-        linkedExpenses: [...linked, { monthKey, expenseId }],
-      } : item)));
-      showToast('Marked as paid — recorded as an expense');
-    }
+    showToast('Commitment deleted');
   }
   function categoryName(id) {
     return categories.find((c) => c.id === id)?.name || 'Uncategorized';
   }
 
-  const applicable = obligations
-    .filter((o) => o.active !== false && obligationAppliesToMonth(o, monthKey))
-    .map((o) => ({ o, status: obligationStatus(o, monthKey, now) }))
-    .filter(({ status }) => statusFilter === 'All' || status.label === statusFilter)
-    .sort((a, b) => {
-      if (a.status.label === 'Paid') return 1;
-      if (b.status.label === 'Paid') return -1;
-      return (a.status.daysUntil ?? 999) - (b.status.daysUntil ?? 999);
-    });
+  const list = obligations
+    .filter((o) => o.active !== false)
+    .sort((a, b) => Number(a.dueDate.slice(8, 10)) - Number(b.dueDate.slice(8, 10)));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
         <span style={{ fontSize: 13, color: colors.textSecondary }}>
-          Obligations for {monthLabel(monthKey)}
+          Recurring and one-time commitments
         </span>
         <button
           onClick={() => { setEditRecord(null); setModalOpen(true); }}
@@ -1972,33 +1929,30 @@ function FinancialObligationsTab({ colors, financial, now }) {
             border: 'none', background: colors.accent, color: '#FFFFFF', fontSize: 13, fontWeight: 500, cursor: 'pointer',
           }}
         >
-          <Plus size={14} /> Add obligation
+          <Plus size={14} /> Add commitment
         </button>
       </div>
 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-        <SummaryCard colors={colors} icon={ListChecks} label="Total obligations" value={fmtCurrency(totals.totalObligations)} tone="upcoming" />
-        <SummaryCard colors={colors} icon={TrendingDown} label="Unpaid this month" value={fmtCurrency(totals.unpaidObligations)} tone="urgent" />
-        <SummaryCard colors={colors} icon={Scale} label="Spendable money" value={fmtCurrency(totals.spendableMoney)} tone="accent" sub="Total available − unpaid obligations" />
+        <SummaryCard colors={colors} icon={ListChecks} label="Total commitments" value={fmtCurrency(totals.totalObligations)} tone="upcoming" />
+        <SummaryCard colors={colors} icon={Scale} label="Spendable money" value={fmtCurrency(totals.spendableMoney)} tone="accent" sub="Total available − unpaid this month" />
       </div>
 
       <div style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '16px 18px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, marginBottom: 14 }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: colors.textPrimary }}>Obligations</span>
-          <FilterPills colors={colors} options={['All', 'Upcoming', 'Due soon', 'Due today', 'Overdue', 'Paid']} value={statusFilter} onChange={setStatusFilter} />
+          <span style={{ fontSize: 13, fontWeight: 600, color: colors.textPrimary }}>Commitments</span>
         </div>
 
-        {applicable.length === 0 ? (
-          <EmptyRow colors={colors} text="You don't have any financial obligations recorded." />
+        {list.length === 0 ? (
+          <EmptyRow colors={colors} text="You don't have any commitments recorded." />
         ) : (
           <div>
-            {applicable.map(({ o }) => (
+            {list.map((o) => (
               <ObligationRow
-                key={o.id} colors={colors} o={o} monthKey={monthKey} now={now}
+                key={o.id} colors={colors} o={o}
                 categoryName={categoryName(o.categoryId)}
                 onEdit={(rec) => { setEditRecord(rec); setModalOpen(true); }}
                 onDelete={handleDelete}
-                onTogglePaid={handleTogglePaid}
               />
             ))}
           </div>
@@ -2840,7 +2794,7 @@ function FinancialPage({ colors, financial, now }) {
       )}
       {tab === 'income' && <FinancialIncomeTab colors={colors} financial={financial} />}
       {tab === 'expenses' && <FinancialExpensesTab colors={colors} financial={financial} />}
-      {tab === 'obligations' && <FinancialObligationsTab colors={colors} financial={financial} now={now} />}
+      {tab === 'obligations' && <FinancialObligationsTab colors={colors} financial={financial} />}
       {tab === 'debt' && <FinancialDebtTab colors={colors} financial={financial} now={now} />}
     </div>
   );
@@ -4053,34 +4007,22 @@ function DailyOSApp() {
     && balancesLoaded && visasLoaded && reportsLoaded && passportsLoaded
     && debtsLoaded && debtPaymentsLoaded && plannedDebtLoaded;
     
-  // Auto-record monthly obligations as expenses once their due day arrives,
-  // so rent/allowance/internet etc. don't need to be entered twice. There's
-  // no backend cron here (this is a static site), so this runs as a
-  // practical equivalent: the moment the app is open on or after the due
-  // day, and it hasn't already been recorded for this month.
-  //
-  // This should only catch up obligations that already existed before this
-  // session (e.g. rent that came due while the app was closed) — not ones
-  // the user just created with a due date earlier in the current month,
-  // which would otherwise get silently marked "Paid" the instant they're
-  // added. So we snapshot the obligation ids present at initial load and
-  // only auto-record against that snapshot.
+  // Auto-record monthly commitments as expenses once their payment day
+  // arrives, so rent/allowance/internet etc. don't need to be entered
+  // twice. There's no backend cron here (this is a static site), so this
+  // runs as a practical equivalent: the moment the app is open on or after
+  // the payment day, and it hasn't already been recorded for this month.
+  // This intentionally also backfills: if a commitment is added with a
+  // payment day already in the past for the current month, it records
+  // immediately for this month too. paidMonths/linkedExpenses are kept
+  // purely as internal bookkeeping to avoid double-recording the same
+  // month, they're not shown as a "paid" status anywhere in the UI.
   const autoPaidRef = useRef(new Set());
-  const knownObligationIdsRef = useRef(null);
   useEffect(() => {
     if (!dataLoaded) return;
-    if (knownObligationIdsRef.current === null) {
-      knownObligationIdsRef.current = new Set(obligations.map((o) => o.id));
-    }
-  }, [dataLoaded, obligations]);
-
-  useEffect(() => {
-    if (!dataLoaded) return;
-    if (!knownObligationIdsRef.current) return;
     const currentMonthKey = monthKeyOf(now);
 
     obligations.forEach((o) => {
-      if (!knownObligationIdsRef.current.has(o.id)) return; // added this session, don't auto-pay
       if (o.active === false) return;
       if (o.frequency !== 'Monthly') return;
       if (!obligationAppliesToMonth(o, currentMonthKey)) return;
@@ -4089,7 +4031,7 @@ function DailyOSApp() {
       if (paidMonths.includes(currentMonthKey)) return;
 
       const dueDateStr = dueDateForMonth(o, currentMonthKey);
-      if (diffDays(dueDateStr, now) > 0) return; // not due yet this month
+      if (diffDays(dueDateStr, now) > 0) return; // payment day hasn't arrived yet this month
 
       const sessionKey = `${o.id}:${currentMonthKey}`;
       if (autoPaidRef.current.has(sessionKey)) return;
@@ -4099,7 +4041,7 @@ function DailyOSApp() {
       setExpenses((prev) => [...prev, {
         id: expenseId, personId: o.personId, categoryId: o.categoryId,
         amount: o.amount, date: dueDateStr, paymentMethod: 'Bank',
-        notes: `Auto-recorded from obligation: ${o.name}`,
+        notes: `Auto-recorded from commitment: ${o.name}`,
       }]);
       setObligations((prev) => prev.map((item) => (item.id === o.id ? {
         ...item,
