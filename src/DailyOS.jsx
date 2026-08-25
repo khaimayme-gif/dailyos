@@ -1297,7 +1297,7 @@ function FinancialIncomeTab({ colors, financial }) {
   );
 }
 
-function ExpenseModal({ colors, onClose, onSave, initial, categories }) {
+function ExpenseModal({ colors, onClose, onSave, initial, categories, obligations = [] }) {
   const activeCats = categories.filter((c) => c.active);
   const [personId, setPersonId] = useState(initial?.personId || 'miki');
   const [categoryId, setCategoryId] = useState(initial?.categoryId || activeCats[0]?.id || '');
@@ -1306,6 +1306,28 @@ function ExpenseModal({ colors, onClose, onSave, initial, categories }) {
   const [paymentMethod, setPaymentMethod] = useState(initial?.paymentMethod || 'Cash');
   const [notes, setNotes] = useState(initial?.notes || '');
   const [errors, setErrors] = useState({});
+  // Tracks whether the current amount came from an obligation's fixed amount
+  // (rent, allowance, internet, etc.) vs. something the user typed themselves,
+  // so switching category doesn't clobber a manual edit.
+  const [amountSource, setAmountSource] = useState('manual');
+
+  function obligationForCategory(catId) {
+    return obligations.find(
+      (o) => o.categoryId === catId && o.active && o.frequency === 'Monthly'
+    );
+  }
+
+  function handleCategoryChange(newCategoryId) {
+    setCategoryId(newCategoryId);
+    if (initial) return; // don't auto-fill while editing an existing record
+    const match = obligationForCategory(newCategoryId);
+    if (match && (amountSource === 'obligation' || amount === '')) {
+      setAmount(String(match.amount));
+      setAmountSource('obligation');
+    }
+  }
+
+  const matchedObligation = obligationForCategory(categoryId);
 
   function handleSave() {
     const errs = {};
@@ -1333,17 +1355,23 @@ function ExpenseModal({ colors, onClose, onSave, initial, categories }) {
         </div>
         <div>
           <label style={fieldLabelStyle(colors)}>Category</label>
-          <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} style={fieldInputStyle(colors, errors.categoryId)}>
+          <select value={categoryId} onChange={(e) => handleCategoryChange(e.target.value)} style={fieldInputStyle(colors, errors.categoryId)}>
             {activeCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>
         <div>
           <label style={fieldLabelStyle(colors)}>Amount (THB)</label>
           <input
-            type="number" value={amount} onChange={(e) => setAmount(e.target.value)}
+            type="number" value={amount}
+            onChange={(e) => { setAmount(e.target.value); setAmountSource('manual'); }}
             placeholder="0" style={fieldInputStyle(colors, errors.amount)}
           />
           {errors.amount && <div style={{ fontSize: 11.5, color: colors.urgent, marginTop: 4 }}>{errors.amount}</div>}
+          {amountSource === 'obligation' && matchedObligation && (
+            <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 4 }}>
+              Auto-filled from your "{matchedObligation.name}" obligation — edit if this month is different.
+            </div>
+          )}
         </div>
         <div>
           <label style={fieldLabelStyle(colors)}>Date</label>
@@ -1537,7 +1565,7 @@ function CategoryManager({ colors, categories, setCategories, expenses, onClose 
 }
 
 function FinancialExpensesTab({ colors, financial }) {
-  const { expenses, setExpenses, categories, setCategories, monthKey, setMonthKey, totals } = financial;
+  const { expenses, setExpenses, categories, setCategories, monthKey, setMonthKey, totals, obligations } = financial;
   const [modalOpen, setModalOpen] = useState(false);
   const [editRecord, setEditRecord] = useState(null);
   const [categoryModalOpen, setCategoryModalOpen] = useState(false);
@@ -1658,7 +1686,7 @@ function FinancialExpensesTab({ colors, financial }) {
 
       {modalOpen && (
         <ExpenseModal
-          colors={colors} initial={editRecord} categories={categories}
+          colors={colors} initial={editRecord} categories={categories} obligations={obligations}
           onClose={() => { setModalOpen(false); setEditRecord(null); }}
           onSave={handleSave}
         />
