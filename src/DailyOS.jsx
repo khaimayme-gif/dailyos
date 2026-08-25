@@ -1915,6 +1915,7 @@ function FinancialObligationsTab({ colors, financial }) {
   const list = obligations
     .filter((o) => o.active !== false)
     .sort((a, b) => Number(a.dueDate.slice(8, 10)) - Number(b.dueDate.slice(8, 10)));
+  const totalCommitments = list.reduce((s, o) => s + Number(o.amount || 0), 0);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -1934,7 +1935,7 @@ function FinancialObligationsTab({ colors, financial }) {
       </div>
 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-        <SummaryCard colors={colors} icon={ListChecks} label="Total commitments" value={fmtCurrency(totals.totalObligations)} tone="upcoming" />
+        <SummaryCard colors={colors} icon={ListChecks} label="Total commitments" value={fmtCurrency(totalCommitments)} tone="upcoming" />
         <SummaryCard colors={colors} icon={Scale} label="Spendable money" value={fmtCurrency(totals.spendableMoney)} tone="accent" sub="Total available − unpaid this month" />
       </div>
 
