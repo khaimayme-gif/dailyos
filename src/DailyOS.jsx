@@ -188,7 +188,7 @@ function WelcomeScreen({ colors, dark: isDark, onEnter }) {
           }}>M</div>
         </div>
 
-        <Logo height={150} />
+        <Logo height={44} />
         <p style={{
           color: colors.textSecondary, fontSize: 15, marginTop: 10, marginBottom: 36,
           lineHeight: 1.5,
@@ -220,7 +220,7 @@ function SidebarContent({ colors, page, setPage, dark: isDark, setDark, closeMob
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', fontFamily: 'Inter, sans-serif' }}>
       <div style={{ padding: '24px 20px 20px' }}>
-        <Logo height={100} />
+        <Logo height={22} />
         <div style={{ color: colors.textFaint, fontSize: 12, marginTop: 4 }}>
           Run your day. Organize your life.
         </div>
@@ -408,6 +408,19 @@ const DEBT_STATUSES = ['Active', 'Paid Off'];
 const DEBT_TYPES = ['Short-term', 'Long-term'];
 const PLANNED_DEBT_STATUSES = ['Planned', 'Paid', 'Cancelled'];
 const PAYMENT_METHODS = ['Cash', 'Bank'];
+
+const OCCASION_CATEGORIES = [
+  { id: 'anniversary', label: 'Anniversary', tone: 'gold' },
+  { id: 'birthday', label: 'Birthday', tone: 'upcoming' },
+  { id: 'class', label: 'Class / Study', tone: 'accent' },
+  { id: 'period', label: 'Period', tone: 'urgent' },
+  { id: 'immigration', label: 'Immigration', tone: 'actionNeeded' },
+  { id: 'other', label: 'Other', tone: 'expired' },
+];
+function occasionCategoryInfo(id) {
+  return OCCASION_CATEGORIES.find((c) => c.id === id) || OCCASION_CATEGORIES[OCCASION_CATEGORIES.length - 1];
+}
+const OCCASION_RECURRENCES = ['None', 'Yearly', 'Monthly (same day)', 'Monthly (last day)'];
 const RENEWAL_STATUSES = ['Not Started', 'Preparing', 'Documents Ready', 'Submitted', 'Completed'];
 const DEFAULT_VISA_CHECKLIST = [
   'Passport checked', 'Required documents prepared', 'Photos prepared',
@@ -458,6 +471,119 @@ function addDays(dateStr, n) {
   const d = parseDateOnly(dateStr);
   d.setDate(d.getDate() + n);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function toDateStr(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function lastDayOfMonth(y, m) {
+  return new Date(y, m, 0).getDate(); // m is 1-12, day 0 of next month = last day of this month
+}
+function clampDayToMonth(y, m, day) {
+  return Math.min(day, lastDayOfMonth(y, m));
+}
+/**
+ * Expands a single occasion (with optional recurrence) into every concrete
+ * occurrence whose date range overlaps [rangeStart, rangeEnd] (inclusive
+ * 'YYYY-MM-DD' strings). Each result is { date, endDate } using the same
+ * span (in days) as the original occasion.
+ */
+function occasionOccurrencesInRange(o, rangeStart, rangeEnd) {
+  const [sy, sm, sd] = o.startDate.split('-').map(Number);
+  const spanDays = o.endDate ? Math.round((parseDateOnly(o.endDate) - parseDateOnly(o.startDate)) / 86400000) : 0;
+  const rStart = parseDateOnly(rangeStart);
+  const rEnd = parseDateOnly(rangeEnd);
+  const results = [];
+
+  function tryAdd(dateStr) {
+    const occStart = parseDateOnly(dateStr);
+    const occEnd = new Date(occStart.getTime() + spanDays * 86400000);
+    if (occEnd >= rStart && occStart <= rEnd) {
+      results.push({ date: dateStr, endDate: spanDays > 0 ? addDays(dateStr, spanDays) : null });
+    }
+  }
+
+  const recurrence = o.recurrence || 'None';
+
+  if (recurrence === 'None') {
+    tryAdd(o.startDate);
+    return results;
+  }
+
+  if (recurrence === 'Yearly') {
+    const y0 = Number(rangeStart.slice(0, 4));
+    const y1 = Number(rangeEnd.slice(0, 4));
+    for (let y = y0 - 1; y <= y1 + 1; y++) {
+      if (y < sy) continue;
+      const day = clampDayToMonth(y, sm, sd);
+      tryAdd(`${y}-${String(sm).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
+    }
+    return results;
+  }
+
+  if (recurrence === 'Monthly (same day)' || recurrence === 'Monthly (last day)') {
+    let y = rStart.getFullYear();
+    let m = rStart.getMonth() + 1;
+    // start one month early to catch multi-day spans that begin just before the range
+    m -= 1;
+    if (m === 0) { m = 12; y -= 1; }
+    for (let i = 0; i < 40; i++) { // generous cap, well beyond any realistic visible range
+      if (y > sy || (y === sy && m >= sm)) {
+        const day = recurrence === 'Monthly (last day)' ? lastDayOfMonth(y, m) : clampDayToMonth(y, m, sd);
+        tryAdd(`${y}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
+      }
+      m += 1;
+      if (m > 12) { m = 1; y += 1; }
+      if (y > Number(rangeEnd.slice(0, 4)) + 1) break;
+    }
+    return results;
+  }
+
+  return results;
+}
+/** Builds the 42 (6-week) grid of dates for a month view, including the
+ * leading/trailing days from adjacent months needed to fill full weeks. */
+function occasionsCalendarGridDays(monthKey) {
+  const [y, m] = monthKey.split('-').map(Number);
+  const firstOfMonth = new Date(y, m - 1, 1);
+  const startWeekday = firstOfMonth.getDay();
+  const gridStart = new Date(y, m - 1, 1 - startWeekday);
+  const days = [];
+  for (let i = 0; i < 42; i++) {
+    days.push(new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + i));
+  }
+  return days;
+}
+/** Derives read-only "virtual" occasions from Visa/Passport/90-day-report
+ * data, so important immigration dates show up on the calendar without
+ * needing to be entered twice. These aren't stored in the occasions table
+ * and can't be edited/deleted from the calendar. */
+function deriveImmigrationOccasions(immigration) {
+  const out = [];
+  for (const v of immigration.visas || []) {
+    if (!v.expirationDate) continue;
+    out.push({
+      id: `virtual-visa-${v.id}`, virtual: true, title: `${USERS.find((u) => u.id === v.personId)?.name || v.personId}'s visa expires`,
+      category: 'immigration', personId: v.personId, startDate: v.expirationDate, endDate: null,
+      startTime: null, endTime: null, location: '', recurrence: 'None', notes: '',
+    });
+  }
+  for (const p of immigration.passports || []) {
+    if (!p.expirationDate) continue;
+    out.push({
+      id: `virtual-passport-${p.id}`, virtual: true, title: `${USERS.find((u) => u.id === p.personId)?.name || p.personId}'s passport expires`,
+      category: 'immigration', personId: p.personId, startDate: p.expirationDate, endDate: null,
+      startTime: null, endTime: null, location: '', recurrence: 'None', notes: '',
+    });
+  }
+  for (const r of immigration.ninetyDayReports || []) {
+    if (r.completed || !r.nextDueDate) continue;
+    out.push({
+      id: `virtual-90day-${r.id}`, virtual: true, title: `${USERS.find((u) => u.id === r.personId)?.name || r.personId}'s 90-day report due`,
+      category: 'immigration', personId: r.personId, startDate: r.nextDueDate, endDate: null,
+      startTime: null, endTime: null, location: '', recurrence: 'None', notes: '',
+    });
+  }
+  return out;
 }
 function dueDateForMonth(o, monthKey) {
   const [, , od] = o.dueDate.split('-').map(Number);
@@ -3940,6 +4066,391 @@ function DashboardPage({ colors, now, financial, immigration, setPage }) {
   );
 }
 
+function OccasionModal({ colors, onClose, onSave, initial, defaultDate }) {
+  const [title, setTitle] = useState(initial?.title || '');
+  const [category, setCategory] = useState(initial?.category || 'other');
+  const [personId, setPersonId] = useState(initial?.personId || 'shared');
+  const [startDate, setStartDate] = useState(initial?.startDate || defaultDate || monthKeyOf(new Date()) + '-01');
+  const [isMultiDay, setIsMultiDay] = useState(!!initial?.endDate);
+  const [endDate, setEndDate] = useState(initial?.endDate || '');
+  const [hasTime, setHasTime] = useState(!!(initial?.startTime || initial?.endTime));
+  const [startTime, setStartTime] = useState(initial?.startTime || '');
+  const [endTime, setEndTime] = useState(initial?.endTime || '');
+  const [location, setLocation] = useState(initial?.location || '');
+  const [recurrence, setRecurrence] = useState(initial?.recurrence || 'None');
+  const [notes, setNotes] = useState(initial?.notes || '');
+  const [errors, setErrors] = useState({});
+
+  function handleSave() {
+    const errs = {};
+    if (!title.trim()) errs.title = 'Title is required.';
+    if (!startDate) errs.startDate = 'Date is required.';
+    if (isMultiDay && endDate && endDate < startDate) errs.endDate = 'End date must be on or after the start date.';
+    setErrors(errs);
+    if (Object.keys(errs).length > 0) return;
+    onSave({
+      id: initial?.id || genId(),
+      title: title.trim(), category, personId, startDate,
+      endDate: isMultiDay && endDate ? endDate : null,
+      startTime: hasTime && startTime ? startTime : null,
+      endTime: hasTime && endTime ? endTime : null,
+      location: location.trim(), recurrence, notes,
+    });
+  }
+
+  return (
+    <Modal colors={colors} onClose={onClose} title={initial ? 'Edit occasion' : 'Add occasion'}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div>
+          <label style={fieldLabelStyle(colors)}>Title</label>
+          <input
+            value={title} onChange={(e) => setTitle(e.target.value)}
+            placeholder="e.g. Alex & Miki's anniversary" style={fieldInputStyle(colors, errors.title)}
+          />
+          {errors.title && <div style={{ fontSize: 11.5, color: colors.urgent, marginTop: 4 }}>{errors.title}</div>}
+        </div>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <label style={fieldLabelStyle(colors)}>Category</label>
+            <select value={category} onChange={(e) => setCategory(e.target.value)} style={fieldInputStyle(colors, false)}>
+              {OCCASION_CATEGORIES.filter((c) => c.id !== 'immigration').map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+            </select>
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={fieldLabelStyle(colors)}>Person</label>
+            <select value={personId} onChange={(e) => setPersonId(e.target.value)} style={fieldInputStyle(colors, false)}>
+              {USERS.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label style={fieldLabelStyle(colors)}>Date</label>
+          <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={fieldInputStyle(colors, errors.startDate)} />
+          {errors.startDate && <div style={{ fontSize: 11.5, color: colors.urgent, marginTop: 4 }}>{errors.startDate}</div>}
+        </div>
+
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: colors.textPrimary, cursor: 'pointer' }}>
+          <input type="checkbox" checked={isMultiDay} onChange={(e) => setIsMultiDay(e.target.checked)} />
+          Spans multiple days
+        </label>
+        {isMultiDay && (
+          <div>
+            <label style={fieldLabelStyle(colors)}>End date</label>
+            <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={fieldInputStyle(colors, errors.endDate)} />
+            {errors.endDate && <div style={{ fontSize: 11.5, color: colors.urgent, marginTop: 4 }}>{errors.endDate}</div>}
+          </div>
+        )}
+
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: colors.textPrimary, cursor: 'pointer' }}>
+          <input type="checkbox" checked={hasTime} onChange={(e) => setHasTime(e.target.checked)} />
+          Has a specific time
+        </label>
+        {hasTime && (
+          <div style={{ display: 'flex', gap: 10 }}>
+            <div style={{ flex: 1 }}>
+              <label style={fieldLabelStyle(colors)}>Start time</label>
+              <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} style={fieldInputStyle(colors, false)} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={fieldLabelStyle(colors)}>End time</label>
+              <input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} style={fieldInputStyle(colors, false)} />
+            </div>
+          </div>
+        )}
+
+        <div>
+          <label style={fieldLabelStyle(colors)}>Location (optional)</label>
+          <input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="e.g. Asok Campus" style={fieldInputStyle(colors, false)} />
+        </div>
+
+        <div>
+          <label style={fieldLabelStyle(colors)}>Repeats</label>
+          <select value={recurrence} onChange={(e) => setRecurrence(e.target.value)} style={fieldInputStyle(colors, false)}>
+            {OCCASION_RECURRENCES.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+          <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 4 }}>
+            "Monthly (last day)" always lands on the actual last calendar day, e.g. 28th in February, 30th in April.
+          </div>
+        </div>
+
+        <div>
+          <label style={fieldLabelStyle(colors)}>Notes (optional)</label>
+          <textarea
+            value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
+            style={{ ...fieldInputStyle(colors, false), resize: 'vertical', fontFamily: 'Inter, sans-serif' }}
+          />
+        </div>
+
+        <button
+          onClick={handleSave}
+          style={{
+            marginTop: 4, padding: '11px 0', borderRadius: 9, border: 'none',
+            background: colors.textPrimary, color: colors.bg, fontSize: 13.5, fontWeight: 600, cursor: 'pointer',
+          }}
+        >Save occasion</button>
+      </div>
+    </Modal>
+  );
+}
+
+function OccasionRow({ colors, o, occurrenceDate, occurrenceEndDate, onEdit, onDelete }) {
+  const [confirming, setConfirming] = useState(false);
+  const info = occasionCategoryInfo(o.category);
+  const toneColor = colors[info.tone] || colors.accent;
+  const toneSoft = colors[`${info.tone}Soft`] || colors.accentSoft;
+  const person = USERS.find((u) => u.id === o.personId)?.name || o.personId;
+
+  const start = parseDateOnly(occurrenceDate);
+  const dateLabel = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const rangeLabel = occurrenceEndDate
+    ? `${dateLabel} – ${parseDateOnly(occurrenceEndDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
+    : dateLabel;
+  const timeLabel = o.startTime ? `${o.startTime}${o.endTime ? ` – ${o.endTime}` : ''}` : null;
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap',
+      padding: '12px 4px', borderBottom: `1px solid ${colors.border}`,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 220, flex: '1 1 240px' }}>
+        <div style={{
+          width: 8, height: 8, borderRadius: '50%', background: toneColor, flexShrink: 0,
+        }} />
+        <div>
+          <div style={{ fontSize: 13.5, fontWeight: 600, color: colors.textPrimary }}>{o.title}</div>
+          <div style={{ fontSize: 11.5, color: colors.textFaint, marginTop: 2 }}>
+            {info.label} · {person}{o.location ? ` · ${o.location}` : ''}
+          </div>
+        </div>
+      </div>
+      <div style={{ textAlign: 'right' }}>
+        <div style={{ fontSize: 12.5, color: colors.textPrimary, fontWeight: 500 }}>{rangeLabel}</div>
+        {timeLabel && <div style={{ fontSize: 11.5, color: colors.textFaint, marginTop: 2 }}>{timeLabel}</div>}
+        {o.recurrence && o.recurrence !== 'None' && (
+          <div style={{ fontSize: 11, color: toneColor, marginTop: 2 }}>{o.recurrence}</div>
+        )}
+      </div>
+      {o.virtual ? (
+        <div style={{ fontSize: 11, color: colors.textFaint, fontStyle: 'italic' }}>From Immigration</div>
+      ) : (
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          {confirming ? (
+            <>
+              <button
+                onClick={() => onDelete(o.id)}
+                style={{ fontSize: 11.5, fontWeight: 600, padding: '6px 10px', borderRadius: 999, border: `1px solid ${colors.urgent}`, background: colors.urgentSoft, color: colors.urgent, cursor: 'pointer' }}
+              >Confirm delete</button>
+              <button
+                onClick={() => setConfirming(false)}
+                style={{ fontSize: 11.5, fontWeight: 500, padding: '6px 10px', borderRadius: 999, border: `1px solid ${colors.border}`, background: 'transparent', color: colors.textSecondary, cursor: 'pointer' }}
+              >Cancel</button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={() => onEdit(o)} aria-label="Edit"
+                style={{ width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, border: `1px solid ${colors.border}`, background: 'transparent', color: colors.textSecondary, cursor: 'pointer' }}
+              ><Pencil size={13} /></button>
+              <button
+                onClick={() => setConfirming(true)} aria-label="Delete"
+                style={{ width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, border: `1px solid ${colors.border}`, background: 'transparent', color: colors.textSecondary, cursor: 'pointer' }}
+              ><Trash2 size={13} /></button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OccasionsPage({ colors, occasions, setOccasions, immigration, now }) {
+  const [monthKey, setMonthKey] = useState(() => monthKeyOf(now));
+  const [selectedDate, setSelectedDate] = useState(() => toDateStr(now));
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editRecord, setEditRecord] = useState(null);
+  const [toast, setToast] = useState('');
+
+  function showToast(text) {
+    setToast(text);
+    setTimeout(() => setToast(''), 2200);
+  }
+  function handleSave(record) {
+    setOccasions((prev) => {
+      const exists = prev.some((r) => r.id === record.id);
+      return exists ? prev.map((r) => (r.id === record.id ? record : r)) : [...prev, record];
+    });
+    setModalOpen(false);
+    setEditRecord(null);
+    showToast(editRecord ? 'Occasion updated' : 'Occasion added');
+  }
+  function handleDelete(id) {
+    setOccasions((prev) => prev.filter((r) => r.id !== id));
+    showToast('Occasion deleted');
+  }
+
+  const gridDays = useMemo(() => occasionsCalendarGridDays(monthKey), [monthKey]);
+  const rangeStart = toDateStr(gridDays[0]);
+  const rangeEnd = toDateStr(gridDays[gridDays.length - 1]);
+
+  const allOccasions = useMemo(
+    () => [...occasions, ...deriveImmigrationOccasions(immigration)],
+    [occasions, immigration]
+  );
+
+  // Map of 'YYYY-MM-DD' -> array of { occasion, occurrenceDate, occurrenceEndDate }
+  const dayMap = useMemo(() => {
+    const map = new Map();
+    for (const o of allOccasions) {
+      const occurrences = occasionOccurrencesInRange(o, rangeStart, rangeEnd);
+      for (const occ of occurrences) {
+        const spanEnd = occ.endDate || occ.date;
+        let cursor = occ.date;
+        while (cursor <= spanEnd) {
+          if (cursor >= rangeStart && cursor <= rangeEnd) {
+            if (!map.has(cursor)) map.set(cursor, []);
+            map.get(cursor).push({ occasion: o, occurrenceDate: occ.date, occurrenceEndDate: occ.endDate });
+          }
+          cursor = addDays(cursor, 1);
+        }
+      }
+    }
+    return map;
+  }, [allOccasions, rangeStart, rangeEnd]);
+
+  const todayStr = toDateStr(now);
+  const selectedEntries = (dayMap.get(selectedDate) || []).sort((a, b) => a.occasion.title.localeCompare(b.occasion.title));
+
+  // Upcoming: next 8 occurrences from today across the next 180 days.
+  const upcoming = useMemo(() => {
+    const horizonEnd = addDays(todayStr, 180);
+    const results = [];
+    for (const o of allOccasions) {
+      for (const occ of occasionOccurrencesInRange(o, todayStr, horizonEnd)) {
+        results.push({ occasion: o, occurrenceDate: occ.date, occurrenceEndDate: occ.endDate });
+      }
+    }
+    results.sort((a, b) => (a.occurrenceDate < b.occurrenceDate ? -1 : a.occurrenceDate > b.occurrenceDate ? 1 : 0));
+    return results.slice(0, 8);
+  }, [allOccasions, todayStr]);
+
+  const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+        <MonthSelector colors={colors} monthKey={monthKey} setMonthKey={setMonthKey} />
+        <button
+          onClick={() => { setEditRecord(null); setModalOpen(true); }}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6, padding: '9px 16px', borderRadius: 9,
+            border: 'none', background: colors.accent, color: '#FFFFFF', fontSize: 13, fontWeight: 500, cursor: 'pointer',
+          }}
+        >
+          <Plus size={14} /> Add occasion
+        </button>
+      </div>
+
+      <div style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 14, padding: 14 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4, marginBottom: 6 }}>
+          {WEEKDAY_LABELS.map((w) => (
+            <div key={w} style={{ textAlign: 'center', fontSize: 11, fontWeight: 600, color: colors.textFaint, padding: '4px 0' }}>{w}</div>
+          ))}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4 }}>
+          {gridDays.map((d) => {
+            const dateStr = toDateStr(d);
+            const inCurrentMonth = dateStr.slice(0, 7) === monthKey;
+            const isToday = dateStr === todayStr;
+            const isSelected = dateStr === selectedDate;
+            const entries = dayMap.get(dateStr) || [];
+            const visible = entries.slice(0, 3);
+            const overflow = entries.length - visible.length;
+            return (
+              <button
+                key={dateStr}
+                onClick={() => setSelectedDate(dateStr)}
+                style={{
+                  textAlign: 'left', minHeight: 74, padding: '6px 5px', borderRadius: 9, cursor: 'pointer',
+                  border: `1px solid ${isSelected ? colors.accent : colors.border}`,
+                  background: isSelected ? colors.accentSoft : colors.surface,
+                  opacity: inCurrentMonth ? 1 : 0.45,
+                  display: 'flex', flexDirection: 'column', gap: 3,
+                }}
+              >
+                <span style={{
+                  fontSize: 11.5, fontWeight: isToday ? 700 : 500,
+                  color: isToday ? colors.accent : colors.textPrimary,
+                }}>{d.getDate()}</span>
+                {visible.map((e, i) => {
+                  const info = occasionCategoryInfo(e.occasion.category);
+                  const toneColor = colors[info.tone] || colors.accent;
+                  return (
+                    <div key={i} style={{
+                      fontSize: 9.5, fontWeight: 500, color: toneColor, background: colors[`${info.tone}Soft`] || colors.accentSoft,
+                      borderRadius: 4, padding: '1px 4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    }}>{e.occasion.title}</div>
+                  );
+                })}
+                {overflow > 0 && (
+                  <div style={{ fontSize: 9.5, color: colors.textFaint }}>+{overflow} more</div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '16px 18px' }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: colors.textPrimary }}>
+          {parseDateOnly(selectedDate).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
+        </span>
+        <div style={{ marginTop: 10 }}>
+          {selectedEntries.length === 0 ? (
+            <EmptyRow colors={colors} text="Nothing on the calendar for this day." />
+          ) : (
+            selectedEntries.map((e, i) => (
+              <OccasionRow
+                key={`${e.occasion.id}-${i}`} colors={colors} o={e.occasion}
+                occurrenceDate={e.occurrenceDate} occurrenceEndDate={e.occurrenceEndDate}
+                onEdit={(rec) => { setEditRecord(rec); setModalOpen(true); }}
+                onDelete={handleDelete}
+              />
+            ))
+          )}
+        </div>
+      </div>
+
+      <div style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '16px 18px' }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: colors.textPrimary }}>Upcoming</span>
+        <div style={{ marginTop: 10 }}>
+          {upcoming.length === 0 ? (
+            <EmptyRow colors={colors} text="Nothing coming up in the next 180 days." />
+          ) : (
+            upcoming.map((e, i) => (
+              <OccasionRow
+                key={`${e.occasion.id}-${i}`} colors={colors} o={e.occasion}
+                occurrenceDate={e.occurrenceDate} occurrenceEndDate={e.occurrenceEndDate}
+                onEdit={(rec) => { setEditRecord(rec); setModalOpen(true); }}
+                onDelete={handleDelete}
+              />
+            ))
+          )}
+        </div>
+      </div>
+
+      {modalOpen && (
+        <OccasionModal
+          colors={colors} initial={editRecord} defaultDate={selectedDate}
+          onClose={() => { setModalOpen(false); setEditRecord(null); }}
+          onSave={handleSave}
+        />
+      )}
+      <Toast colors={colors} text={toast} />
+    </div>
+  );
+}
+
 function DailyOSApp() {
   const [stage, setStage] = useState('welcome');
   const [page, setPage] = useState('dashboard');
@@ -3971,12 +4482,14 @@ function DailyOSApp() {
   const [passports, setPassports, passportsLoaded] = useSyncedCollection('passports');
   const immigration = { visas, setVisas, ninetyDayReports, setNinetyDayReports, passports, setPassports };
 
+  const [occasions, setOccasions, occasionsLoaded] = useSyncedCollection('occasions');
+
   const colors = useMemo(() => (isDark ? dark : light), [isDark]);
   const currentTitle = NAV_ITEMS.find((n) => n.id === page)?.label || 'Dashboard';
 
   const dataLoaded = incomesLoaded && expensesLoaded && obligationsLoaded && categoriesLoaded
     && balancesLoaded && visasLoaded && reportsLoaded && passportsLoaded
-    && debtsLoaded && debtPaymentsLoaded && plannedDebtLoaded;
+    && debtsLoaded && debtPaymentsLoaded && plannedDebtLoaded && occasionsLoaded;
     
   // Auto-record monthly commitments as expenses once their payment day
   // arrives, so rent/allowance/internet etc. don't need to be entered
@@ -4091,7 +4604,8 @@ function DailyOSApp() {
           )}
           {page === 'financial' && <FinancialPage colors={colors} financial={financial} now={now} />}
           {page === 'immigration' && <ImmigrationPage colors={colors} immigration={immigration} now={now} />}
-          {page !== 'dashboard' && page !== 'financial' && page !== 'immigration' && <PlaceholderPage colors={colors} page={page} />}
+          {page === 'occasions' && <OccasionsPage colors={colors} occasions={occasions} setOccasions={setOccasions} immigration={immigration} now={now} />}
+          {page !== 'dashboard' && page !== 'financial' && page !== 'immigration' && page !== 'occasions' && <PlaceholderPage colors={colors} page={page} />}
         </main>
       </div>
     </div>
