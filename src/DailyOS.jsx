@@ -408,6 +408,7 @@ const DEFAULT_CATEGORIES = [
 const INCOME_TYPES = ['Salary', 'Business Income', 'Extra Money'];
 const OBLIGATION_FREQUENCIES = ['One-time', 'Weekly', 'Monthly', 'Yearly'];
 const DEBT_STATUSES = ['Active', 'Paid Off'];
+const DEBT_TYPES = ['Short-term', 'Long-term'];
 const PLANNED_DEBT_STATUSES = ['Planned', 'Paid', 'Cancelled'];
 const PAYMENT_METHODS = ['Cash', 'Bank'];
 const RENEWAL_STATUSES = ['Not Started', 'Preparing', 'Documents Ready', 'Submitted', 'Completed'];
@@ -532,6 +533,12 @@ function useDebtTotals({ debts, debtPayments, plannedDebtPayments, monthKey }) {
     const activeDebts = debts.filter((d) => (d.status || 'Active') !== 'Paid Off');
     const totalOutstanding = debts.reduce((s, d) => s + debtOutstandingBalance(d, debtPayments), 0);
     const totalOriginal = debts.reduce((s, d) => s + Number(d.originalAmount || 0), 0);
+    const shortTermOutstanding = debts
+      .filter((d) => (d.debtType || 'Short-term') === 'Short-term')
+      .reduce((s, d) => s + debtOutstandingBalance(d, debtPayments), 0);
+    const longTermOutstanding = debts
+      .filter((d) => d.debtType === 'Long-term')
+      .reduce((s, d) => s + debtOutstandingBalance(d, debtPayments), 0);
     const monthlyInterestDue = activeDebts.reduce((s, d) => {
       const period = currentInterestPeriod(d.interestSchedule, monthKey);
       return s + Number(period?.monthlyInterestAmount || 0);
@@ -547,6 +554,7 @@ function useDebtTotals({ debts, debtPayments, plannedDebtPayments, monthKey }) {
     const percentPaid = totalOriginal > 0 ? ((totalOriginal - totalOutstanding) / totalOriginal) * 100 : 0;
     return {
       totalOutstanding, totalOriginal, monthlyInterestDue,
+      shortTermOutstanding, longTermOutstanding,
       interestPaidThisMonth, principalPaidThisMonth, totalPaidThisMonth,
       nextPlanned, upcomingPlanned: upcoming, percentPaid,
     };
@@ -1982,6 +1990,7 @@ function DebtModal({ colors, onClose, onSave, initial }) {
   const [originalAmount, setOriginalAmount] = useState(initial?.originalAmount ?? '');
   const [startingBalance, setStartingBalance] = useState(initial?.startingBalance ?? initial?.originalAmount ?? '');
   const [personId, setPersonId] = useState(initial?.personId || 'shared');
+  const [debtType, setDebtType] = useState(initial?.debtType || 'Short-term');
   const [startDate, setStartDate] = useState(initial?.startDate || monthKeyOf(new Date()) + '-01');
   const [notes, setNotes] = useState(initial?.notes || '');
   const [schedule, setSchedule] = useState(
@@ -2017,7 +2026,7 @@ function DebtModal({ colors, onClose, onSave, initial }) {
       name: name.trim(),
       originalAmount: Number(originalAmount),
       startingBalance: Number(startingBalance),
-      personId, startDate, notes,
+      personId, startDate, notes, debtType,
       status: initial?.status || 'Active',
       interestSchedule: schedule
         .filter((p) => p.monthlyInterestAmount !== '')
@@ -2080,6 +2089,16 @@ function DebtModal({ colors, onClose, onSave, initial }) {
               type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
               style={fieldInputStyle(colors, errors.startDate)}
             />
+          </div>
+        </div>
+
+        <div>
+          <label style={fieldLabelStyle(colors)}>Loan type</label>
+          <select value={debtType} onChange={(e) => setDebtType(e.target.value)} style={fieldInputStyle(colors, false)}>
+            {DEBT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 4 }}>
+            Short-term: a loan you plan to fully repay soon. Long-term: an ongoing loan where you're currently only paying interest.
           </div>
         </div>
 
@@ -2703,6 +2722,11 @@ function FinancialDebtTab({ colors, financial, now }) {
         <SummaryCard colors={colors} icon={TrendingUp} label="Monthly interest" value={fmtCurrency(debtTotals.monthlyInterestDue)} tone="upcoming" />
         <SummaryCard colors={colors} icon={TrendingDown} label="Principal paid this month" value={fmtCurrency(debtTotals.principalPaidThisMonth)} tone="safe" />
         <SummaryCard colors={colors} icon={Scale} label="Total debt payment this month" value={fmtCurrency(debtTotals.totalPaidThisMonth)} tone="accent" sub="Interest + principal paid" />
+      </div>
+
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        <SummaryCard colors={colors} icon={CreditCard} label="To pay off this month" value={fmtCurrency(debtTotals.shortTermOutstanding)} tone="urgent" sub="Short-term loans" />
+        <SummaryCard colors={colors} icon={CreditCard} label="Ongoing (interest-only)" value={fmtCurrency(debtTotals.longTermOutstanding)} tone="upcoming" sub="Long-term loans" />
       </div>
 
       {debtTotals.totalOriginal > 0 && (
@@ -3861,7 +3885,8 @@ function DashboardPage({ colors, now, financial, immigration, setPage }) {
         </div>
         {debtTotals.totalOriginal > 0 && (
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 12 }}>
-            <SummaryCard colors={colors} icon={CreditCard} label="Outstanding debt" value={fmtCurrency(debtTotals.totalOutstanding)} tone="urgent" sub={`${debtTotals.percentPaid.toFixed(1)}% paid off`} />
+            <SummaryCard colors={colors} icon={CreditCard} label="To pay off this month" value={fmtCurrency(debtTotals.shortTermOutstanding)} tone="urgent" sub="Short-term loans" />
+            <SummaryCard colors={colors} icon={CreditCard} label="Total debt" value={fmtCurrency(debtTotals.totalOutstanding)} tone="upcoming" sub={`${debtTotals.percentPaid.toFixed(1)}% paid off`} />
             <SummaryCard colors={colors} icon={TrendingUp} label="Interest due this month" value={fmtCurrency(debtTotals.monthlyInterestDue)} tone="upcoming" />
             {debtTotals.nextPlanned && (
               <SummaryCard
