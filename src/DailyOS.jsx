@@ -4059,6 +4059,7 @@ function DailyOSApp() {
   // practical equivalent: the moment the app is open on or after the due
   // day, and it hasn't already been recorded for this month.
   const autoPaidRef = useRef(new Set());
+  const autoPaidRef = useRef(new Set());
   useEffect(() => {
     if (!dataLoaded) return;
     const currentMonthKey = monthKeyOf(now);
@@ -4073,17 +4074,8 @@ function DailyOSApp() {
 
       const dueDateStr = dueDateForMonth(o, currentMonthKey);
       if (diffDays(dueDateStr, now) > 0) return; // not due yet this month
-
-      const sessionKey = `${o.id}:${currentMonthKey}`;
-      if (autoPaidRef.current.has(sessionKey)) return;
-      autoPaidRef.current.add(sessionKey);
-
-      const expenseId = genId();
-      setExpenses((prev) => [...prev, {
-        id: expenseId, personId: o.personId, categoryId: o.categoryId,
-        amount: o.amount, date: dueDateStr, paymentMethod: 'Bank',
-        notes: `Auto-recorded from obligation: ${o.name}`,
-      }]);
+      ...
+      setExpenses((prev) => [...prev, { ... }]);
       setObligations((prev) => prev.map((item) => (item.id === o.id ? {
         ...item,
         paidMonths: [...(item.paidMonths || []), currentMonthKey],
