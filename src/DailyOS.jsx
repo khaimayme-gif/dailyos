@@ -188,7 +188,7 @@ function WelcomeScreen({ colors, dark: isDark, onEnter }) {
           }}>M</div>
         </div>
 
-        <Logo height={44} />
+        <Logo height={150} />
         <p style={{
           color: colors.textSecondary, fontSize: 15, marginTop: 10, marginBottom: 36,
           lineHeight: 1.5,
@@ -220,7 +220,7 @@ function SidebarContent({ colors, page, setPage, dark: isDark, setDark, closeMob
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', fontFamily: 'Inter, sans-serif' }}>
       <div style={{ padding: '24px 20px 20px' }}>
-        <Logo height={22} />
+        <Logo height={100} />
         <div style={{ color: colors.textFaint, fontSize: 12, marginTop: 4 }}>
           Run your day. Organize your life.
         </div>
