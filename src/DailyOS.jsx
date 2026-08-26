@@ -83,11 +83,65 @@ const PLACEHOLDER_COPY = {
   },
 };
 
-const NOTIFICATIONS = [
-  { id: 1, level: 'urgent', text: 'Your 90-day report is due in 18 days.' },
-  { id: 2, level: 'upcoming', text: 'Alex & Miki anniversary is in 5 days.' },
-  { id: 3, level: 'safe', text: 'Japan trip starts in 108 days.' },
-];
+/**
+ * Builds real, live notifications from actual app data: upcoming/overdue
+ * immigration dates (visa & passport expiry, 90-day reports) and upcoming
+ * occasions (birthdays, anniversaries, classes, etc., including recurring
+ * ones — only their next occurrence is shown, not every future instance).
+ * Sorted soonest-first, capped to a reasonable count so the panel doesn't
+ * flood with far-future items.
+ */
+function computeNotifications(immigration, occasions, now) {
+  const todayStr = toDateStr(now);
+  const horizon = 45; // days out we bother surfacing at all
+  const items = [];
+
+  function levelFor(daysUntil) {
+    if (daysUntil <= 0) return 'urgent';
+    if (daysUntil <= 14) return 'upcoming';
+    return 'safe';
+  }
+  function relativeLabel(daysUntil) {
+    if (daysUntil < 0) return `overdue by ${Math.abs(daysUntil)}d`;
+    if (daysUntil === 0) return 'due today';
+    return `in ${daysUntil}d`;
+  }
+  function personName(id) {
+    return USERS.find((u) => u.id === id)?.name || id;
+  }
+
+  for (const v of immigration.visas || []) {
+    if (!v.expirationDate) continue;
+    const d = diffDays(v.expirationDate, now);
+    if (d > horizon) continue;
+    items.push({ id: `visa-${v.id}`, level: levelFor(d), daysUntil: d, text: `${personName(v.personId)}'s visa expires ${relativeLabel(d)}.` });
+  }
+  for (const p of immigration.passports || []) {
+    if (!p.expirationDate) continue;
+    const d = diffDays(p.expirationDate, now);
+    if (d > horizon) continue;
+    items.push({ id: `passport-${p.id}`, level: levelFor(d), daysUntil: d, text: `${personName(p.personId)}'s passport expires ${relativeLabel(d)}.` });
+  }
+  for (const r of immigration.ninetyDayReports || []) {
+    if (r.completed || !r.nextDueDate) continue;
+    const d = diffDays(r.nextDueDate, now);
+    if (d > horizon) continue;
+    items.push({ id: `90day-${r.id}`, level: levelFor(d), daysUntil: d, text: `${personName(r.personId)}'s 90-day report is ${relativeLabel(d)}.` });
+  }
+
+  const horizonEnd = addDays(todayStr, horizon);
+  for (const o of occasions || []) {
+    const occurrences = occasionOccurrencesInRange(o, todayStr, horizonEnd);
+    if (occurrences.length === 0) continue;
+    // Only the soonest upcoming occurrence, so a recurring event doesn't spam multiple entries.
+    const next = occurrences.reduce((a, b) => (a.date < b.date ? a : b));
+    const d = diffDays(next.date, now);
+    items.push({ id: `occasion-${o.id}-${next.date}`, level: levelFor(d), daysUntil: d, text: `${o.title} is ${relativeLabel(d)}.` });
+  }
+
+  items.sort((a, b) => a.daysUntil - b.daysUntil);
+  return items.slice(0, 8);
+}
 
 function useClock() {
   const [now, setNow] = useState(() => new Date());
@@ -288,8 +342,8 @@ function SidebarContent({ colors, page, setPage, dark: isDark, setDark, closeMob
   );
 }
 
-function TopBar({ colors, title, onMenu, notifOpen, setNotifOpen }) {
-  const unread = NOTIFICATIONS.length;
+function TopBar({ colors, title, onMenu, notifOpen, setNotifOpen, notifications }) {
+  const unread = notifications.length;
   return (
     <div style={{
       display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -341,18 +395,24 @@ function TopBar({ colors, title, onMenu, notifOpen, setNotifOpen }) {
             <div style={{ fontSize: 12, fontWeight: 600, color: colors.textFaint, padding: '6px 8px' }}>
               Notifications
             </div>
-            {NOTIFICATIONS.map((n) => (
-              <div key={n.id} style={{
-                display: 'flex', gap: 8, alignItems: 'flex-start',
-                padding: '8px', borderRadius: 8,
-              }}>
-                <span style={{
-                  width: 7, height: 7, borderRadius: '50%', marginTop: 5, flexShrink: 0,
-                  background: colors[n.level] || colors.accent,
-                }} />
-                <span style={{ fontSize: 13, color: colors.textPrimary, lineHeight: 1.4 }}>{n.text}</span>
+            {notifications.length === 0 ? (
+              <div style={{ padding: '10px 8px', fontSize: 12.5, color: colors.textFaint }}>
+                Nothing needs your attention right now.
               </div>
-            ))}
+            ) : (
+              notifications.map((n) => (
+                <div key={n.id} style={{
+                  display: 'flex', gap: 8, alignItems: 'flex-start',
+                  padding: '8px', borderRadius: 8,
+                }}>
+                  <span style={{
+                    width: 7, height: 7, borderRadius: '50%', marginTop: 5, flexShrink: 0,
+                    background: colors[n.level] || colors.accent,
+                  }} />
+                  <span style={{ fontSize: 13, color: colors.textPrimary, lineHeight: 1.4 }}>{n.text}</span>
+                </div>
+              ))
+            )}
           </div>
         )}
       </div>
@@ -492,9 +552,11 @@ function occasionOccurrencesInRange(o, rangeStart, rangeEnd) {
   const spanDays = o.endDate ? Math.round((parseDateOnly(o.endDate) - parseDateOnly(o.startDate)) / 86400000) : 0;
   const rStart = parseDateOnly(rangeStart);
   const rEnd = parseDateOnly(rangeEnd);
+  const skipDates = o.skipDates || [];
   const results = [];
 
   function tryAdd(dateStr) {
+    if (skipDates.includes(dateStr)) return;
     const occStart = parseDateOnly(dateStr);
     const occEnd = new Date(occStart.getTime() + spanDays * 86400000);
     if (occEnd >= rStart && occStart <= rEnd) {
@@ -4194,8 +4256,9 @@ function OccasionModal({ colors, onClose, onSave, initial, defaultDate }) {
   );
 }
 
-function OccasionRow({ colors, o, occurrenceDate, occurrenceEndDate, onEdit, onDelete }) {
+function OccasionRow({ colors, o, occurrenceDate, occurrenceEndDate, onEdit, onDelete, onSkipOccurrence }) {
   const [confirming, setConfirming] = useState(false);
+  const isRecurring = o.recurrence && o.recurrence !== 'None';
   const info = occasionCategoryInfo(o.category);
   const toneColor = colors[info.tone] || colors.accent;
   const toneSoft = colors[`${info.tone}Soft`] || colors.accentSoft;
@@ -4227,25 +4290,42 @@ function OccasionRow({ colors, o, occurrenceDate, occurrenceEndDate, onEdit, onD
       <div style={{ textAlign: 'right' }}>
         <div style={{ fontSize: 12.5, color: colors.textPrimary, fontWeight: 500 }}>{rangeLabel}</div>
         {timeLabel && <div style={{ fontSize: 11.5, color: colors.textFaint, marginTop: 2 }}>{timeLabel}</div>}
-        {o.recurrence && o.recurrence !== 'None' && (
+        {isRecurring && (
           <div style={{ fontSize: 11, color: toneColor, marginTop: 2 }}>{o.recurrence}</div>
         )}
       </div>
       {o.virtual ? (
         <div style={{ fontSize: 11, color: colors.textFaint, fontStyle: 'italic' }}>From Immigration</div>
       ) : (
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           {confirming ? (
-            <>
-              <button
-                onClick={() => onDelete(o.id)}
-                style={{ fontSize: 11.5, fontWeight: 600, padding: '6px 10px', borderRadius: 999, border: `1px solid ${colors.urgent}`, background: colors.urgentSoft, color: colors.urgent, cursor: 'pointer' }}
-              >Confirm delete</button>
-              <button
-                onClick={() => setConfirming(false)}
-                style={{ fontSize: 11.5, fontWeight: 500, padding: '6px 10px', borderRadius: 999, border: `1px solid ${colors.border}`, background: 'transparent', color: colors.textSecondary, cursor: 'pointer' }}
-              >Cancel</button>
-            </>
+            isRecurring ? (
+              <>
+                <button
+                  onClick={() => onSkipOccurrence(o.id, occurrenceDate)}
+                  style={{ fontSize: 11.5, fontWeight: 600, padding: '6px 10px', borderRadius: 999, border: `1px solid ${colors.urgent}`, background: colors.urgentSoft, color: colors.urgent, cursor: 'pointer' }}
+                >Skip this one</button>
+                <button
+                  onClick={() => onDelete(o.id)}
+                  style={{ fontSize: 11.5, fontWeight: 600, padding: '6px 10px', borderRadius: 999, border: `1px solid ${colors.urgent}`, background: 'transparent', color: colors.urgent, cursor: 'pointer' }}
+                >Delete entire series</button>
+                <button
+                  onClick={() => setConfirming(false)}
+                  style={{ fontSize: 11.5, fontWeight: 500, padding: '6px 10px', borderRadius: 999, border: `1px solid ${colors.border}`, background: 'transparent', color: colors.textSecondary, cursor: 'pointer' }}
+                >Cancel</button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={() => onDelete(o.id)}
+                  style={{ fontSize: 11.5, fontWeight: 600, padding: '6px 10px', borderRadius: 999, border: `1px solid ${colors.urgent}`, background: colors.urgentSoft, color: colors.urgent, cursor: 'pointer' }}
+                >Confirm delete</button>
+                <button
+                  onClick={() => setConfirming(false)}
+                  style={{ fontSize: 11.5, fontWeight: 500, padding: '6px 10px', borderRadius: 999, border: `1px solid ${colors.border}`, background: 'transparent', color: colors.textSecondary, cursor: 'pointer' }}
+                >Cancel</button>
+              </>
+            )
           ) : (
             <>
               <button
@@ -4287,6 +4367,13 @@ function OccasionsPage({ colors, occasions, setOccasions, immigration, now }) {
   function handleDelete(id) {
     setOccasions((prev) => prev.filter((r) => r.id !== id));
     showToast('Occasion deleted');
+  }
+  function handleSkipOccurrence(id, occurrenceDate) {
+    setOccasions((prev) => prev.map((r) => (r.id === id ? {
+      ...r,
+      skipDates: [...(r.skipDates || []), occurrenceDate],
+    } : r)));
+    showToast('That occurrence was skipped');
   }
 
   const gridDays = useMemo(() => occasionsCalendarGridDays(monthKey), [monthKey]);
@@ -4415,6 +4502,7 @@ function OccasionsPage({ colors, occasions, setOccasions, immigration, now }) {
                 occurrenceDate={e.occurrenceDate} occurrenceEndDate={e.occurrenceEndDate}
                 onEdit={(rec) => { setEditRecord(rec); setModalOpen(true); }}
                 onDelete={handleDelete}
+                onSkipOccurrence={handleSkipOccurrence}
               />
             ))
           )}
@@ -4433,6 +4521,7 @@ function OccasionsPage({ colors, occasions, setOccasions, immigration, now }) {
                 occurrenceDate={e.occurrenceDate} occurrenceEndDate={e.occurrenceEndDate}
                 onEdit={(rec) => { setEditRecord(rec); setModalOpen(true); }}
                 onDelete={handleDelete}
+                onSkipOccurrence={handleSkipOccurrence}
               />
             ))
           )}
@@ -4490,6 +4579,11 @@ function DailyOSApp() {
   const dataLoaded = incomesLoaded && expensesLoaded && obligationsLoaded && categoriesLoaded
     && balancesLoaded && visasLoaded && reportsLoaded && passportsLoaded
     && debtsLoaded && debtPaymentsLoaded && plannedDebtLoaded && occasionsLoaded;
+
+  const notifications = useMemo(
+    () => (dataLoaded ? computeNotifications(immigration, occasions, now) : []),
+    [dataLoaded, immigration, occasions, now]
+  );
     
   // Auto-record monthly commitments as expenses once their payment day
   // arrives, so rent/allowance/internet etc. don't need to be entered
@@ -4598,6 +4692,7 @@ function DailyOSApp() {
             colors={colors} title={currentTitle}
             onMenu={() => setMobileOpen(true)}
             notifOpen={notifOpen} setNotifOpen={setNotifOpen}
+            notifications={notifications}
           />
           {page === 'dashboard' && (
             <DashboardPage colors={colors} now={now} financial={financial} immigration={immigration} setPage={setPage} />
