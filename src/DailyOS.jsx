@@ -697,6 +697,43 @@ function obligationStatus(o, monthKey, now) {
   return { label, tone, dueDateStr, daysUntil };
 }
 
+function todayStr(now) {
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
+/** Manually records this month's payment for a commitment: creates the
+ * linked expense (dated today, since that's when the payment actually
+ * happened) and marks the current month paid on the commitment itself. */
+function recordObligationPayment(o, now, setExpenses, setObligations) {
+  const currentMonthKey = monthKeyOf(now);
+  const expenseId = genId();
+  setExpenses((prev) => [...prev, {
+    id: expenseId, personId: o.personId, categoryId: o.categoryId,
+    amount: o.amount, date: todayStr(now), paymentMethod: 'Bank',
+    notes: `Recorded from commitment: ${o.name}`,
+  }]);
+  setObligations((prev) => prev.map((item) => (item.id === o.id ? {
+    ...item,
+    paidMonths: [...(item.paidMonths || []), currentMonthKey],
+    linkedExpenses: [...(item.linkedExpenses || []), { monthKey: currentMonthKey, expenseId }],
+  } : item)));
+}
+
+/** Reverses recordObligationPayment: removes the linked expense (if it
+ * still exists) and un-marks the current month as paid. */
+function undoObligationPayment(o, now, setExpenses, setObligations) {
+  const currentMonthKey = monthKeyOf(now);
+  const link = (o.linkedExpenses || []).find((l) => l.monthKey === currentMonthKey);
+  if (link) {
+    setExpenses((prev) => prev.filter((e) => e.id !== link.expenseId));
+  }
+  setObligations((prev) => prev.map((item) => (item.id === o.id ? {
+    ...item,
+    paidMonths: (item.paidMonths || []).filter((m) => m !== currentMonthKey),
+    linkedExpenses: (item.linkedExpenses || []).filter((l) => l.monthKey !== currentMonthKey),
+  } : item)));
+}
+
 // --- Debt helpers ---
 // Interest schedule periods use 'YYYY-MM' strings for effectiveFrom/effectiveUntil,
 // same format as monthKey, so lexicographic comparison is correct chronological order.
@@ -1495,7 +1532,7 @@ function ExpenseModal({ colors, onClose, onSave, initial, categories, obligation
   const personId = initial?.personId || currentPersonId;
   const [categoryId, setCategoryId] = useState(initial?.categoryId || activeCats[0]?.id || '');
   const [amount, setAmount] = useState(initial?.amount ?? '');
-  const [date, setDate] = useState(initial?.date || monthKeyOf(new Date()) + '-01');
+  const [date, setDate] = useState(initial?.date || new Date().toISOString().slice(0, 10));
   const [paymentMethod, setPaymentMethod] = useState(initial?.paymentMethod || 'Cash');
   const [notes, setNotes] = useState(initial?.notes || '');
   const [errors, setErrors] = useState({});
@@ -2015,9 +2052,11 @@ function StatusBadge({ colors, tone, label }) {
   );
 }
 
-function ObligationRow({ colors, o, categoryName, onEdit, onDelete }) {
+function ObligationRow({ colors, o, categoryName, now, onEdit, onDelete, onMarkPaid, onUndoPaid }) {
   const [confirming, setConfirming] = useState(false);
   const person = USERS.find((u) => u.id === o.personId)?.name || o.personId;
+  const currentMonthKey = monthKeyOf(now);
+  const paidThisMonth = (o.paidMonths || []).includes(currentMonthKey);
 
   return (
     <div style={{
@@ -2042,6 +2081,23 @@ function ObligationRow({ colors, o, categoryName, onEdit, onDelete }) {
         )}
       </div>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        {paidThisMonth ? (
+          <>
+            <span style={{
+              fontSize: 11.5, fontWeight: 600, color: colors.safe, background: colors.safeSoft,
+              borderRadius: 999, padding: '4px 10px', display: 'flex', alignItems: 'center', gap: 4,
+            }}><Check size={11} /> Paid</span>
+            <button onClick={() => onUndoPaid(o)} style={{ fontSize: 11, color: colors.textFaint, background: 'none', border: 'none', cursor: 'pointer' }}>Undo</button>
+          </>
+        ) : (
+          <button
+            onClick={() => onMarkPaid(o)}
+            style={{
+              fontSize: 11.5, fontWeight: 600, color: colors.accent, background: colors.accentSoft,
+              border: 'none', borderRadius: 999, padding: '5px 12px', cursor: 'pointer',
+            }}
+          >Paid</button>
+        )}
         {confirming ? (
           <>
             <button onClick={() => onDelete(o.id)} style={{ fontSize: 11.5, color: colors.urgent, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}>Delete</button>
@@ -2058,8 +2114,8 @@ function ObligationRow({ colors, o, categoryName, onEdit, onDelete }) {
   );
 }
 
-function FinancialObligationsTab({ colors, financial }) {
-  const { obligations, setObligations, categories, totals } = financial;
+function FinancialObligationsTab({ colors, financial, now }) {
+  const { obligations, setObligations, expenses, setExpenses, categories, totals } = financial;
   const [modalOpen, setModalOpen] = useState(false);
   const [editRecord, setEditRecord] = useState(null);
   const [toast, setToast] = useState('');
@@ -2079,11 +2135,19 @@ function FinancialObligationsTab({ colors, financial }) {
     showToast(editRecord ? 'Commitment updated' : 'Commitment added');
   }
   function handleDelete(id) {
-    // Commitments are just a template. Expenses already auto-recorded from
+    // Commitments are just a template. Expenses already recorded from
     // this commitment stay in Expenses as history, this only removes the
     // template so nothing further gets recorded from it going forward.
     setObligations((prev) => prev.filter((r) => r.id !== id));
     showToast('Commitment deleted');
+  }
+  function handleMarkPaid(o) {
+    recordObligationPayment(o, now, setExpenses, setObligations);
+    showToast(`${o.name} marked paid — added to Expenses`);
+  }
+  function handleUndoPaid(o) {
+    undoObligationPayment(o, now, setExpenses, setObligations);
+    showToast(`${o.name} unmarked`);
   }
   function categoryName(id) {
     return categories.find((c) => c.id === id)?.name || 'Uncategorized';
@@ -2127,10 +2191,12 @@ function FinancialObligationsTab({ colors, financial }) {
           <div>
             {list.map((o) => (
               <ObligationRow
-                key={o.id} colors={colors} o={o}
+                key={o.id} colors={colors} o={o} now={now}
                 categoryName={categoryName(o.categoryId)}
                 onEdit={(rec) => { setEditRecord(rec); setModalOpen(true); }}
                 onDelete={handleDelete}
+                onMarkPaid={handleMarkPaid}
+                onUndoPaid={handleUndoPaid}
               />
             ))}
           </div>
@@ -2979,7 +3045,7 @@ function FinancialPage({ colors, financial, now }) {
       )}
       {tab === 'income' && <FinancialIncomeTab colors={colors} financial={financial} />}
       {tab === 'expenses' && <FinancialExpensesTab colors={colors} financial={financial} />}
-      {tab === 'obligations' && <FinancialObligationsTab colors={colors} financial={financial} />}
+      {tab === 'obligations' && <FinancialObligationsTab colors={colors} financial={financial} now={now} />}
       {tab === 'debt' && <FinancialDebtTab colors={colors} financial={financial} now={now} />}
     </div>
   );
@@ -4584,50 +4650,6 @@ function DailyOSApp() {
     () => (dataLoaded ? computeNotifications(immigration, occasions, now) : []),
     [dataLoaded, immigration, occasions, now]
   );
-    
-  // Auto-record monthly commitments as expenses once their payment day
-  // arrives, so rent/allowance/internet etc. don't need to be entered
-  // twice. There's no backend cron here (this is a static site), so this
-  // runs as a practical equivalent: the moment the app is open on or after
-  // the payment day, and it hasn't already been recorded for this month.
-  // This intentionally also backfills: if a commitment is added with a
-  // payment day already in the past for the current month, it records
-  // immediately for this month too. paidMonths/linkedExpenses are kept
-  // purely as internal bookkeeping to avoid double-recording the same
-  // month, they're not shown as a "paid" status anywhere in the UI.
-  const autoPaidRef = useRef(new Set());
-  useEffect(() => {
-    if (!dataLoaded) return;
-    const currentMonthKey = monthKeyOf(now);
-
-    obligations.forEach((o) => {
-      if (o.active === false) return;
-      if (o.frequency !== 'Monthly') return;
-      if (!obligationAppliesToMonth(o, currentMonthKey)) return;
-
-      const paidMonths = o.paidMonths || [];
-      if (paidMonths.includes(currentMonthKey)) return;
-
-      const dueDateStr = dueDateForMonth(o, currentMonthKey);
-      if (diffDays(dueDateStr, now) > 0) return; // payment day hasn't arrived yet this month
-
-      const sessionKey = `${o.id}:${currentMonthKey}`;
-      if (autoPaidRef.current.has(sessionKey)) return;
-      autoPaidRef.current.add(sessionKey);
-
-      const expenseId = genId();
-      setExpenses((prev) => [...prev, {
-        id: expenseId, personId: o.personId, categoryId: o.categoryId,
-        amount: o.amount, date: dueDateStr, paymentMethod: 'Bank',
-        notes: `Auto-recorded from commitment: ${o.name}`,
-      }]);
-      setObligations((prev) => prev.map((item) => (item.id === o.id ? {
-        ...item,
-        paidMonths: [...(item.paidMonths || []), currentMonthKey],
-        linkedExpenses: [...(item.linkedExpenses || []), { monthKey: currentMonthKey, expenseId }],
-      } : item)));
-    });
-  }, [dataLoaded, obligations, monthKeyOf(now)]);
 
   if (stage === 'welcome') {
     return <WelcomeScreen colors={colors} dark={isDark} onEnter={() => setStage('app')} />;
