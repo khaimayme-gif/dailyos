@@ -4,11 +4,12 @@ import {
   Menu, X, Settings, ChevronRight, ChevronLeft, LogOut,
   Banknote, Landmark, TrendingUp, TrendingDown, Scale, Receipt, ListChecks,
   Plus, Pencil, Trash2, Check, CalendarDays, Fingerprint, Eye, EyeOff, ClipboardList, History,
-  CreditCard, CalendarClock,
+  CreditCard, CalendarClock, QrCode, Download,
 } from 'lucide-react';
 import LoginGate, { SignOutButton, useCurrentUser } from './lib/LoginGate';
 import { useSyncedCollection, useSyncedBalances } from './lib/sync';
 import Logo from './lib/Logo';
+import QRCode from 'qrcode';
 
 const FONT_IMPORT = "@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;1,9..144,500&family=Inter:wght@400;500;600&display=swap');";
 
@@ -68,6 +69,7 @@ const NAV_ITEMS = [
   { id: 'immigration', label: 'Immigration', icon: BadgeCheck },
   { id: 'occasions', label: 'Occasions', icon: PartyPopper },
   { id: 'trips', label: 'Trips', icon: Plane },
+  { id: 'qrcode', label: 'QR Code', icon: QrCode },
 ];
 
 const PLACEHOLDER_COPY = {
@@ -4540,6 +4542,108 @@ function OccasionsPage({ colors, occasions, setOccasions, immigration, now }) {
   );
 }
 
+function QRCodePage({ colors }) {
+  const [text, setText] = useState('');
+  const [size, setSize] = useState(512);
+  const [qrDataUrl, setQrDataUrl] = useState('');
+  const [error, setError] = useState('');
+  const [generating, setGenerating] = useState(false);
+
+  useEffect(() => {
+    const value = text.trim();
+    if (!value) {
+      setQrDataUrl('');
+      setError('');
+      return;
+    }
+    let cancelled = false;
+    setGenerating(true);
+    const t = setTimeout(() => {
+      QRCode.toDataURL(value, {
+        width: size, margin: 2,
+        color: { dark: '#1A1A1A', light: '#FFFFFF' },
+      })
+        .then((url) => {
+          if (cancelled) return;
+          setQrDataUrl(url);
+          setError('');
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          setQrDataUrl('');
+          setError(err?.message === 'The amount of data is too big to be stored in a QR Code'
+            ? 'That text is too long to fit in a QR code. Try a shorter link.'
+            : 'Could not generate a QR code for that input.');
+        })
+        .finally(() => { if (!cancelled) setGenerating(false); });
+    }, 250); // small debounce so it doesn't regenerate on every keystroke
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [text, size]);
+
+  function handleDownload() {
+    if (!qrDataUrl) return;
+    const a = document.createElement('a');
+    a.href = qrDataUrl;
+    a.download = 'qr-code.png';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18, maxWidth: 480 }}>
+      <div style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '18px 20px' }}>
+        <label style={fieldLabelStyle(colors)}>Link or text</label>
+        <textarea
+          value={text} onChange={(e) => setText(e.target.value)} rows={3}
+          placeholder="https://example.com"
+          style={{ ...fieldInputStyle(colors, false), resize: 'vertical', fontFamily: 'Inter, sans-serif' }}
+        />
+        <div style={{ marginTop: 12 }}>
+          <label style={fieldLabelStyle(colors)}>Size</label>
+          <select value={size} onChange={(e) => setSize(Number(e.target.value))} style={fieldInputStyle(colors, false)}>
+            <option value={256}>Small (256×256)</option>
+            <option value={512}>Medium (512×512)</option>
+            <option value={1024}>Large (1024×1024)</option>
+          </select>
+        </div>
+      </div>
+
+      <div style={{
+        background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '24px 20px',
+        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16, minHeight: 260, justifyContent: 'center',
+      }}>
+        {error && (
+          <div style={{ fontSize: 12.5, color: colors.urgent, textAlign: 'center' }}>{error}</div>
+        )}
+        {!error && !qrDataUrl && (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, color: colors.textFaint }}>
+            <QrCode size={32} />
+            <span style={{ fontSize: 12.5 }}>{generating ? 'Generating…' : 'Enter a link or text above to generate a QR code.'}</span>
+          </div>
+        )}
+        {qrDataUrl && (
+          <>
+            <img
+              src={qrDataUrl} alt="Generated QR code"
+              style={{ width: 220, height: 220, borderRadius: 8, border: `1px solid ${colors.border}`, background: '#FFFFFF' }}
+            />
+            <button
+              onClick={handleDownload}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6, padding: '9px 16px', borderRadius: 9,
+                border: 'none', background: colors.accent, color: '#FFFFFF', fontSize: 13, fontWeight: 500, cursor: 'pointer',
+              }}
+            >
+              <Download size={14} /> Download PNG
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function DailyOSApp() {
   const [stage, setStage] = useState('welcome');
   const [page, setPage] = useState('dashboard');
@@ -4700,7 +4804,8 @@ function DailyOSApp() {
           {page === 'financial' && <FinancialPage colors={colors} financial={financial} now={now} />}
           {page === 'immigration' && <ImmigrationPage colors={colors} immigration={immigration} now={now} />}
           {page === 'occasions' && <OccasionsPage colors={colors} occasions={occasions} setOccasions={setOccasions} immigration={immigration} now={now} />}
-          {page !== 'dashboard' && page !== 'financial' && page !== 'immigration' && page !== 'occasions' && <PlaceholderPage colors={colors} page={page} />}
+          {page === 'qrcode' && <QRCodePage colors={colors} />}
+          {page !== 'dashboard' && page !== 'financial' && page !== 'immigration' && page !== 'occasions' && page !== 'qrcode' && <PlaceholderPage colors={colors} page={page} />}
         </main>
       </div>
     </div>
