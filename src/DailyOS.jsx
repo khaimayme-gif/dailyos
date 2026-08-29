@@ -1787,7 +1787,7 @@ function CategoryManager({ colors, categories, setCategories, expenses, onClose 
   );
 }
 
-function FinancialExpensesTab({ colors, financial }) {
+function FinancialExpensesTab({ colors, financial, now }) {
   const { expenses, setExpenses, categories, setCategories, monthKey, setMonthKey, totals, obligations } = financial;
   const [modalOpen, setModalOpen] = useState(false);
   const [editRecord, setEditRecord] = useState(null);
