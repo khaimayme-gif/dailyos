@@ -2339,6 +2339,7 @@ function DebtModal({ colors, onClose, onSave, initial }) {
           </div>
         </div>
 
+        {debtType === 'Long-term' && (
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <label style={fieldLabelStyle(colors)}>Interest schedule</label>
@@ -2401,7 +2402,8 @@ function DebtModal({ colors, onClose, onSave, initial }) {
           <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 6 }}>
             Add a new period whenever the monthly interest changes instead of editing an old one — that keeps a history of how interest changed over time.
           </div>
-        </div>
+                </div>
+        )}
 
         <div>
           <label style={fieldLabelStyle(colors)}>Notes (optional)</label>
