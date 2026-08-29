@@ -2978,6 +2978,7 @@ function FinancialDebtTab({ colors, financial, now }) {
   const { debts, setDebts, debtPayments, plannedDebtPayments, monthKey, categories } = financial;
   const [modalOpen, setModalOpen] = useState(false);
   const [toast, setToast] = useState('');
+  const [showPaidOff, setShowPaidOff] = useState(false);
 
   function showToast(text) {
     setToast(text);
@@ -2986,6 +2987,8 @@ function FinancialDebtTab({ colors, financial, now }) {
 
   const debtTotals = useDebtTotals({ debts, debtPayments, plannedDebtPayments, monthKey });
   const hasInterestCategory = categories.some((c) => c.name === 'Interest');
+  const activeDebts = debts.filter((d) => (d.status || 'Active') !== 'Paid Off');
+  const paidOffDebts = debts.filter((d) => d.status === 'Paid Off');
 
   function handleAddDebt(record) {
     setDebts((prev) => [...prev, record]);
@@ -3045,15 +3048,45 @@ function FinancialDebtTab({ colors, financial, now }) {
       {debts.length === 0 ? (
         <EmptyRow colors={colors} text="No debts recorded yet. Add one to start tracking interest and principal payments." />
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 14 }}>
-          {debts.map((debt) => (
-            <DebtCard
-              key={debt.id} colors={colors} debt={debt} debtPayments={debtPayments}
-              plannedDebtPayments={plannedDebtPayments} monthKey={monthKey} now={now}
-              financial={financial} showToast={showToast}
-            />
-          ))}
-        </div>
+        <>
+          {activeDebts.length === 0 ? (
+            <EmptyRow colors={colors} text="No active debts right now." />
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 14 }}>
+              {activeDebts.map((debt) => (
+                <DebtCard
+                  key={debt.id} colors={colors} debt={debt} debtPayments={debtPayments}
+                  plannedDebtPayments={plannedDebtPayments} monthKey={monthKey} now={now}
+                  financial={financial} showToast={showToast}
+                />
+              ))}
+            </div>
+          )}
+
+          {paidOffDebts.length > 0 && (
+            <div>
+              <button
+                onClick={() => setShowPaidOff((v) => !v)}
+                style={{
+                  fontSize: 12.5, color: colors.textSecondary, background: 'none', border: 'none',
+                  cursor: 'pointer', fontWeight: 500, padding: '6px 0',
+                }}
+              >{showPaidOff ? 'Hide' : 'Show'} paid off ({paidOffDebts.length})</button>
+
+              {showPaidOff && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 14, marginTop: 10 }}>
+                  {paidOffDebts.map((debt) => (
+                    <DebtCard
+                      key={debt.id} colors={colors} debt={debt} debtPayments={debtPayments}
+                      plannedDebtPayments={plannedDebtPayments} monthKey={monthKey} now={now}
+                      financial={financial} showToast={showToast}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </>
       )}
 
       {modalOpen && (
