@@ -1795,6 +1795,7 @@ function FinancialExpensesTab({ colors, financial }) {
   const [personFilter, setPersonFilter] = useState('All');
   const [categoryFilter, setCategoryFilter] = useState('All');
   const [paymentFilter, setPaymentFilter] = useState('All');
+  const [dateFilter, setDateFilter] = useState('Today');
   const [toast, setToast] = useState('');
 
   function showToast(text) {
@@ -1819,7 +1820,9 @@ function FinancialExpensesTab({ colors, financial }) {
     return categories.find((c) => c.id === id)?.name || 'Uncategorized';
   }
 
+  const todayStr = toDateStr(now);
   const filtered = totals.monthExpenses
+    .filter((r) => dateFilter === 'This month' || r.date === todayStr)
     .filter((r) => personFilter === 'All' || USERS.find((u) => u.id === r.personId)?.name === personFilter)
     .filter((r) => categoryFilter === 'All' || categoryName(r.categoryId) === categoryFilter)
     .filter((r) => paymentFilter === 'All' || r.paymentMethod === paymentFilter)
@@ -1881,8 +1884,10 @@ function FinancialExpensesTab({ colors, financial }) {
           <span style={{ fontSize: 13, fontWeight: 600, color: colors.textPrimary }}>Expense records</span>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
-          <FilterPills colors={colors} options={['All', 'Miki', 'Alex', 'Shared']} value={personFilter} onChange={setPersonFilter} />
-          <FilterPills colors={colors} options={['All', ...PAYMENT_METHODS]} value={paymentFilter} onChange={setPaymentFilter} />
+        <FilterPills colors={colors} options={['Today', 'This month']} value={dateFilter} onChange={setDateFilter} />
+        <FilterPills colors={colors} options={['All', 'Miki', 'Alex', 'Shared']} value={personFilter} onChange={setPersonFilter} />
+        <FilterPills colors={colors} options={['All', ...PAYMENT_METHODS]} value={paymentFilter} onChange={setPaymentFilter} />
+        
           <select
             value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}
             style={{ ...fieldInputStyle(colors, false), width: 'auto', minWidth: 160 }}
@@ -1893,7 +1898,7 @@ function FinancialExpensesTab({ colors, financial }) {
         </div>
 
         {filtered.length === 0 ? (
-          <EmptyRow colors={colors} text={`No expenses recorded for ${monthLabel(monthKey)} yet.`} />
+          <EmptyRow colors={colors} text={dateFilter === 'Today' ? 'No expenses recorded today yet.' : `No expenses recorded for ${monthLabel(monthKey)} yet.`} />
         ) : (
           <div>
             {filtered.map((r) => (
@@ -3137,7 +3142,7 @@ function FinancialPage({ colors, financial, now }) {
         />
       )}
       {tab === 'income' && <FinancialIncomeTab colors={colors} financial={financial} />}
-      {tab === 'expenses' && <FinancialExpensesTab colors={colors} financial={financial} />}
+      {tab === 'expenses' && <FinancialExpensesTab colors={colors} financial={financial} now={now} />}
       {tab === 'obligations' && <FinancialObligationsTab colors={colors} financial={financial} now={now} />}
       {tab === 'debt' && <FinancialDebtTab colors={colors} financial={financial} now={now} />}
     </div>
