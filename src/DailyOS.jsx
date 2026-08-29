@@ -4,12 +4,11 @@ import {
   Menu, X, Settings, ChevronRight, ChevronLeft, LogOut,
   Banknote, Landmark, TrendingUp, TrendingDown, Scale, Receipt, ListChecks,
   Plus, Pencil, Trash2, Check, CalendarDays, Fingerprint, Eye, EyeOff, ClipboardList, History,
-  CreditCard, CalendarClock, QrCode, Download,
+  CreditCard, CalendarClock,
 } from 'lucide-react';
 import LoginGate, { SignOutButton, useCurrentUser } from './lib/LoginGate';
 import { useSyncedCollection, useSyncedBalances } from './lib/sync';
 import Logo from './lib/Logo';
-import QRCode from 'qrcode';
 
 const FONT_IMPORT = "@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;1,9..144,500&family=Inter:wght@400;500;600&display=swap');";
 
@@ -69,7 +68,6 @@ const NAV_ITEMS = [
   { id: 'immigration', label: 'Immigration', icon: BadgeCheck },
   { id: 'occasions', label: 'Occasions', icon: PartyPopper },
   { id: 'trips', label: 'Trips', icon: Plane },
-  { id: 'qrcode', label: 'QR Code', icon: QrCode },
 ];
 
 const PLACEHOLDER_COPY = {
@@ -697,6 +695,43 @@ function obligationStatus(o, monthKey, now) {
   else if (daysUntil <= 7) { label = 'Due soon'; tone = 'upcoming'; }
   else { label = 'Upcoming'; tone = 'safe'; }
   return { label, tone, dueDateStr, daysUntil };
+}
+
+function todayStr(now) {
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
+/** Manually records this month's payment for a commitment: creates the
+ * linked expense (dated today, since that's when the payment actually
+ * happened) and marks the current month paid on the commitment itself. */
+function recordObligationPayment(o, now, setExpenses, setObligations) {
+  const currentMonthKey = monthKeyOf(now);
+  const expenseId = genId();
+  setExpenses((prev) => [...prev, {
+    id: expenseId, personId: o.personId, categoryId: o.categoryId,
+    amount: o.amount, date: todayStr(now), paymentMethod: 'Bank',
+    notes: `Recorded from commitment: ${o.name}`,
+  }]);
+  setObligations((prev) => prev.map((item) => (item.id === o.id ? {
+    ...item,
+    paidMonths: [...(item.paidMonths || []), currentMonthKey],
+    linkedExpenses: [...(item.linkedExpenses || []), { monthKey: currentMonthKey, expenseId }],
+  } : item)));
+}
+
+/** Reverses recordObligationPayment: removes the linked expense (if it
+ * still exists) and un-marks the current month as paid. */
+function undoObligationPayment(o, now, setExpenses, setObligations) {
+  const currentMonthKey = monthKeyOf(now);
+  const link = (o.linkedExpenses || []).find((l) => l.monthKey === currentMonthKey);
+  if (link) {
+    setExpenses((prev) => prev.filter((e) => e.id !== link.expenseId));
+  }
+  setObligations((prev) => prev.map((item) => (item.id === o.id ? {
+    ...item,
+    paidMonths: (item.paidMonths || []).filter((m) => m !== currentMonthKey),
+    linkedExpenses: (item.linkedExpenses || []).filter((l) => l.monthKey !== currentMonthKey),
+  } : item)));
 }
 
 // --- Debt helpers ---
@@ -1497,7 +1532,7 @@ function ExpenseModal({ colors, onClose, onSave, initial, categories, obligation
   const personId = initial?.personId || currentPersonId;
   const [categoryId, setCategoryId] = useState(initial?.categoryId || activeCats[0]?.id || '');
   const [amount, setAmount] = useState(initial?.amount ?? '');
-  const [date, setDate] = useState(initial?.date || monthKeyOf(new Date()) + '-01');
+  const [date, setDate] = useState(initial?.date || new Date().toISOString().slice(0, 10));
   const [paymentMethod, setPaymentMethod] = useState(initial?.paymentMethod || 'Cash');
   const [notes, setNotes] = useState(initial?.notes || '');
   const [errors, setErrors] = useState({});
@@ -2017,9 +2052,11 @@ function StatusBadge({ colors, tone, label }) {
   );
 }
 
-function ObligationRow({ colors, o, categoryName, onEdit, onDelete }) {
+function ObligationRow({ colors, o, categoryName, now, onEdit, onDelete, onMarkPaid, onUndoPaid }) {
   const [confirming, setConfirming] = useState(false);
   const person = USERS.find((u) => u.id === o.personId)?.name || o.personId;
+  const currentMonthKey = monthKeyOf(now);
+  const paidThisMonth = (o.paidMonths || []).includes(currentMonthKey);
 
   return (
     <div style={{
@@ -2044,6 +2081,23 @@ function ObligationRow({ colors, o, categoryName, onEdit, onDelete }) {
         )}
       </div>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        {paidThisMonth ? (
+          <>
+            <span style={{
+              fontSize: 11.5, fontWeight: 600, color: colors.safe, background: colors.safeSoft,
+              borderRadius: 999, padding: '4px 10px', display: 'flex', alignItems: 'center', gap: 4,
+            }}><Check size={11} /> Paid</span>
+            <button onClick={() => onUndoPaid(o)} style={{ fontSize: 11, color: colors.textFaint, background: 'none', border: 'none', cursor: 'pointer' }}>Undo</button>
+          </>
+        ) : (
+          <button
+            onClick={() => onMarkPaid(o)}
+            style={{
+              fontSize: 11.5, fontWeight: 600, color: colors.accent, background: colors.accentSoft,
+              border: 'none', borderRadius: 999, padding: '5px 12px', cursor: 'pointer',
+            }}
+          >Paid</button>
+        )}
         {confirming ? (
           <>
             <button onClick={() => onDelete(o.id)} style={{ fontSize: 11.5, color: colors.urgent, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}>Delete</button>
@@ -2060,8 +2114,8 @@ function ObligationRow({ colors, o, categoryName, onEdit, onDelete }) {
   );
 }
 
-function FinancialObligationsTab({ colors, financial }) {
-  const { obligations, setObligations, categories, totals } = financial;
+function FinancialObligationsTab({ colors, financial, now }) {
+  const { obligations, setObligations, expenses, setExpenses, categories, totals } = financial;
   const [modalOpen, setModalOpen] = useState(false);
   const [editRecord, setEditRecord] = useState(null);
   const [toast, setToast] = useState('');
@@ -2081,11 +2135,19 @@ function FinancialObligationsTab({ colors, financial }) {
     showToast(editRecord ? 'Commitment updated' : 'Commitment added');
   }
   function handleDelete(id) {
-    // Commitments are just a template. Expenses already auto-recorded from
+    // Commitments are just a template. Expenses already recorded from
     // this commitment stay in Expenses as history, this only removes the
     // template so nothing further gets recorded from it going forward.
     setObligations((prev) => prev.filter((r) => r.id !== id));
     showToast('Commitment deleted');
+  }
+  function handleMarkPaid(o) {
+    recordObligationPayment(o, now, setExpenses, setObligations);
+    showToast(`${o.name} marked paid — added to Expenses`);
+  }
+  function handleUndoPaid(o) {
+    undoObligationPayment(o, now, setExpenses, setObligations);
+    showToast(`${o.name} unmarked`);
   }
   function categoryName(id) {
     return categories.find((c) => c.id === id)?.name || 'Uncategorized';
@@ -2129,10 +2191,12 @@ function FinancialObligationsTab({ colors, financial }) {
           <div>
             {list.map((o) => (
               <ObligationRow
-                key={o.id} colors={colors} o={o}
+                key={o.id} colors={colors} o={o} now={now}
                 categoryName={categoryName(o.categoryId)}
                 onEdit={(rec) => { setEditRecord(rec); setModalOpen(true); }}
                 onDelete={handleDelete}
+                onMarkPaid={handleMarkPaid}
+                onUndoPaid={handleUndoPaid}
               />
             ))}
           </div>
@@ -2579,8 +2643,8 @@ function PlannedPaymentModal({ colors, onClose, onSave, debt, monthKey, initial 
 function DebtCard({ colors, debt, debtPayments, plannedDebtPayments, monthKey, now, financial, showToast }) {
   const [expanded, setExpanded] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const [confirmingPaid, setConfirmingPaid] = useState(false);
   const [editingDebt, setEditingDebt] = useState(false);
+  const [confirmingPaid, setConfirmingPaid] = useState(false);
   const [recordModal, setRecordModal] = useState(null); // { initial?, plannedId? } | null
   const [planModal, setPlanModal] = useState(null); // { initial? } | null
 
@@ -2605,6 +2669,7 @@ function DebtCard({ colors, debt, debtPayments, plannedDebtPayments, monthKey, n
     const found = categories.find((c) => c.name === 'Interest');
     return found ? found.id : categories[0]?.id;
   }
+
   function getOrCreateDebtRepaymentCategoryId() {
     const found = categories.find((c) => c.name === 'Debt Repayment');
     if (found) return found.id;
@@ -2707,85 +2772,58 @@ function DebtCard({ colors, debt, debtPayments, plannedDebtPayments, monthKey, n
   }
 
   return (
-    <div style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '16px 18px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap' }}>
-        <div>
-          <div style={{ fontSize: 11.5, color: colors.textFaint, marginBottom: 2 }}>{person}</div>
-          <div style={{ fontSize: 15, fontWeight: 600, color: colors.textPrimary }}>{debt.name}</div>
+    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 14 }}>
+  {debt.debtType === 'Long-term' ? (
+    <>
+      <button
+        onClick={() => setRecordModal({})}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 5, padding: '7px 12px', borderRadius: 999,
+          border: 'none', background: colors.accent, color: '#FFFFFF', fontSize: 12, fontWeight: 500, cursor: 'pointer',
+        }}
+      ><Plus size={12} /> Record payment</button>
+      <button
+        onClick={() => setPlanModal({})}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 5, padding: '7px 12px', borderRadius: 999,
+          border: `1px solid ${colors.border}`, background: 'transparent', color: colors.textSecondary, fontSize: 12, fontWeight: 500, cursor: 'pointer',
+        }}
+      ><CalendarClock size={12} /> Plan payment</button>
+    </>
+  ) : (
+    !isPaidOff && (
+      confirmingPaid ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 11.5, color: colors.textSecondary }}>
+            Record {fmtCurrency(outstanding)} as a Debt Repayment expense today?
+          </span>
+          <button
+            onClick={handleMarkFullyPaid}
+            style={{ fontSize: 11.5, fontWeight: 600, padding: '6px 10px', borderRadius: 999, border: 'none', background: colors.accent, color: '#FFFFFF', cursor: 'pointer' }}
+          >Confirm</button>
+          <button
+            onClick={() => setConfirmingPaid(false)}
+            style={{ fontSize: 11.5, fontWeight: 500, padding: '6px 10px', borderRadius: 999, border: `1px solid ${colors.border}`, background: 'transparent', color: colors.textSecondary, cursor: 'pointer' }}
+          >Cancel</button>
         </div>
-        <StatusBadge colors={colors} tone={isPaidOff ? 'safe' : 'accent'} label={isPaidOff ? 'Paid Off' : 'Active'} />
-      </div>
-
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 14 }}>
-        <span style={{ fontSize: 20, fontWeight: 600, color: colors.textPrimary }}>{fmtCurrency(outstanding)}</span>
-        <span style={{ fontSize: 11.5, color: colors.textFaint }}>of {fmtCurrency(debt.originalAmount)} original</span>
-      </div>
-      <div style={{ height: 6, borderRadius: 999, background: colors.surfaceMuted, overflow: 'hidden', marginTop: 8 }}>
-        <div style={{ height: '100%', width: `${Math.min(100, percentPaid)}%`, background: colors.accent, borderRadius: 999 }} />
-      </div>
-      <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 4 }}>{percentPaid.toFixed(1)}% repaid</div>
-
-      <div style={{ display: 'flex', gap: 16, marginTop: 12 }}>
-        <div>
-          <div style={{ fontSize: 11, color: colors.textFaint }}>Current monthly interest</div>
-          <div style={{ fontSize: 13.5, fontWeight: 600, color: colors.textPrimary }}>
-            {currentPeriod ? fmtCurrency(currentPeriod.monthlyInterestAmount) : '—'}
-          </div>
-        </div>
-      </div>
-
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 14 }}>
-        {debt.debtType === 'Long-term' ? (
-          <>
-            <button
-              onClick={() => setRecordModal({})}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 5, padding: '7px 12px', borderRadius: 999,
-                border: 'none', background: colors.accent, color: '#FFFFFF', fontSize: 12, fontWeight: 500, cursor: 'pointer',
-              }}
-            ><Plus size={12} /> Record payment</button>
-            <button
-              onClick={() => setPlanModal({})}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 5, padding: '7px 12px', borderRadius: 999,
-                border: `1px solid ${colors.border}`, background: 'transparent', color: colors.textSecondary, fontSize: 12, fontWeight: 500, cursor: 'pointer',
-              }}
-            ><CalendarClock size={12} /> Plan payment</button>
-          </>
-        ) : (
-          !isPaidOff && (
-            confirmingPaid ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 11.5, color: colors.textSecondary }}>
-                  Record {fmtCurrency(outstanding)} as a Debt Repayment expense today?
-                </span>
-                <button
-                  onClick={handleMarkFullyPaid}
-                  style={{ fontSize: 11.5, fontWeight: 600, padding: '6px 10px', borderRadius: 999, border: 'none', background: colors.accent, color: '#FFFFFF', cursor: 'pointer' }}
-                >Confirm</button>
-                <button
-                  onClick={() => setConfirmingPaid(false)}
-                  style={{ fontSize: 11.5, fontWeight: 500, padding: '6px 10px', borderRadius: 999, border: `1px solid ${colors.border}`, background: 'transparent', color: colors.textSecondary, cursor: 'pointer' }}
-                >Cancel</button>
-              </div>
-            ) : (
-              <button
-                onClick={() => setConfirmingPaid(true)}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 5, padding: '7px 12px', borderRadius: 999,
-                  border: 'none', background: colors.accent, color: '#FFFFFF', fontSize: 12, fontWeight: 500, cursor: 'pointer',
-                }}
-              ><Check size={12} /> Paid</button>
-            )
-          )
-        )}
+      ) : (
         <button
-          onClick={() => setExpanded((v) => !v)}
+          onClick={() => setConfirmingPaid(true)}
           style={{
-            marginLeft: 'auto', fontSize: 12, color: colors.accent, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 500,
+            display: 'flex', alignItems: 'center', gap: 5, padding: '7px 12px', borderRadius: 999,
+            border: 'none', background: colors.accent, color: '#FFFFFF', fontSize: 12, fontWeight: 500, cursor: 'pointer',
           }}
-        >{expanded ? 'Hide history' : 'History'}</button>
-      </div>
+        ><Check size={12} /> Paid</button>
+      )
+    )
+  )}
+  <button
+    onClick={() => setExpanded((v) => !v)}
+    style={{
+      marginLeft: 'auto', fontSize: 12, color: colors.accent, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 500,
+    }}
+  >{expanded ? 'Hide history' : 'History'}</button>
+</div>
 
       {expanded && (
         <div style={{ marginTop: 14, borderTop: `1px solid ${colors.border}`, paddingTop: 14 }}>
@@ -3038,7 +3076,7 @@ function FinancialPage({ colors, financial, now }) {
       )}
       {tab === 'income' && <FinancialIncomeTab colors={colors} financial={financial} />}
       {tab === 'expenses' && <FinancialExpensesTab colors={colors} financial={financial} />}
-      {tab === 'obligations' && <FinancialObligationsTab colors={colors} financial={financial} />}
+      {tab === 'obligations' && <FinancialObligationsTab colors={colors} financial={financial} now={now} />}
       {tab === 'debt' && <FinancialDebtTab colors={colors} financial={financial} now={now} />}
     </div>
   );
@@ -4599,108 +4637,6 @@ function OccasionsPage({ colors, occasions, setOccasions, immigration, now }) {
   );
 }
 
-function QRCodePage({ colors }) {
-  const [text, setText] = useState('');
-  const [size, setSize] = useState(512);
-  const [qrDataUrl, setQrDataUrl] = useState('');
-  const [error, setError] = useState('');
-  const [generating, setGenerating] = useState(false);
-
-  useEffect(() => {
-    const value = text.trim();
-    if (!value) {
-      setQrDataUrl('');
-      setError('');
-      return;
-    }
-    let cancelled = false;
-    setGenerating(true);
-    const t = setTimeout(() => {
-      QRCode.toDataURL(value, {
-        width: size, margin: 2,
-        color: { dark: '#1A1A1A', light: '#FFFFFF' },
-      })
-        .then((url) => {
-          if (cancelled) return;
-          setQrDataUrl(url);
-          setError('');
-        })
-        .catch((err) => {
-          if (cancelled) return;
-          setQrDataUrl('');
-          setError(err?.message === 'The amount of data is too big to be stored in a QR Code'
-            ? 'That text is too long to fit in a QR code. Try a shorter link.'
-            : 'Could not generate a QR code for that input.');
-        })
-        .finally(() => { if (!cancelled) setGenerating(false); });
-    }, 250); // small debounce so it doesn't regenerate on every keystroke
-    return () => { cancelled = true; clearTimeout(t); };
-  }, [text, size]);
-
-  function handleDownload() {
-    if (!qrDataUrl) return;
-    const a = document.createElement('a');
-    a.href = qrDataUrl;
-    a.download = 'qr-code.png';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  }
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 18, maxWidth: 480 }}>
-      <div style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '18px 20px' }}>
-        <label style={fieldLabelStyle(colors)}>Link or text</label>
-        <textarea
-          value={text} onChange={(e) => setText(e.target.value)} rows={3}
-          placeholder="https://example.com"
-          style={{ ...fieldInputStyle(colors, false), resize: 'vertical', fontFamily: 'Inter, sans-serif' }}
-        />
-        <div style={{ marginTop: 12 }}>
-          <label style={fieldLabelStyle(colors)}>Size</label>
-          <select value={size} onChange={(e) => setSize(Number(e.target.value))} style={fieldInputStyle(colors, false)}>
-            <option value={256}>Small (256×256)</option>
-            <option value={512}>Medium (512×512)</option>
-            <option value={1024}>Large (1024×1024)</option>
-          </select>
-        </div>
-      </div>
-
-      <div style={{
-        background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '24px 20px',
-        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16, minHeight: 260, justifyContent: 'center',
-      }}>
-        {error && (
-          <div style={{ fontSize: 12.5, color: colors.urgent, textAlign: 'center' }}>{error}</div>
-        )}
-        {!error && !qrDataUrl && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, color: colors.textFaint }}>
-            <QrCode size={32} />
-            <span style={{ fontSize: 12.5 }}>{generating ? 'Generating…' : 'Enter a link or text above to generate a QR code.'}</span>
-          </div>
-        )}
-        {qrDataUrl && (
-          <>
-            <img
-              src={qrDataUrl} alt="Generated QR code"
-              style={{ width: 220, height: 220, borderRadius: 8, border: `1px solid ${colors.border}`, background: '#FFFFFF' }}
-            />
-            <button
-              onClick={handleDownload}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 6, padding: '9px 16px', borderRadius: 9,
-                border: 'none', background: colors.accent, color: '#FFFFFF', fontSize: 13, fontWeight: 500, cursor: 'pointer',
-              }}
-            >
-              <Download size={14} /> Download PNG
-            </button>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
 function DailyOSApp() {
   const [stage, setStage] = useState('welcome');
   const [page, setPage] = useState('dashboard');
@@ -4745,50 +4681,6 @@ function DailyOSApp() {
     () => (dataLoaded ? computeNotifications(immigration, occasions, now) : []),
     [dataLoaded, immigration, occasions, now]
   );
-    
-  // Auto-record monthly commitments as expenses once their payment day
-  // arrives, so rent/allowance/internet etc. don't need to be entered
-  // twice. There's no backend cron here (this is a static site), so this
-  // runs as a practical equivalent: the moment the app is open on or after
-  // the payment day, and it hasn't already been recorded for this month.
-  // This intentionally also backfills: if a commitment is added with a
-  // payment day already in the past for the current month, it records
-  // immediately for this month too. paidMonths/linkedExpenses are kept
-  // purely as internal bookkeeping to avoid double-recording the same
-  // month, they're not shown as a "paid" status anywhere in the UI.
-  const autoPaidRef = useRef(new Set());
-  useEffect(() => {
-    if (!dataLoaded) return;
-    const currentMonthKey = monthKeyOf(now);
-
-    obligations.forEach((o) => {
-      if (o.active === false) return;
-      if (o.frequency !== 'Monthly') return;
-      if (!obligationAppliesToMonth(o, currentMonthKey)) return;
-
-      const paidMonths = o.paidMonths || [];
-      if (paidMonths.includes(currentMonthKey)) return;
-
-      const dueDateStr = dueDateForMonth(o, currentMonthKey);
-      if (diffDays(dueDateStr, now) > 0) return; // payment day hasn't arrived yet this month
-
-      const sessionKey = `${o.id}:${currentMonthKey}`;
-      if (autoPaidRef.current.has(sessionKey)) return;
-      autoPaidRef.current.add(sessionKey);
-
-      const expenseId = genId();
-      setExpenses((prev) => [...prev, {
-        id: expenseId, personId: o.personId, categoryId: o.categoryId,
-        amount: o.amount, date: dueDateStr, paymentMethod: 'Bank',
-        notes: `Auto-recorded from commitment: ${o.name}`,
-      }]);
-      setObligations((prev) => prev.map((item) => (item.id === o.id ? {
-        ...item,
-        paidMonths: [...(item.paidMonths || []), currentMonthKey],
-        linkedExpenses: [...(item.linkedExpenses || []), { monthKey: currentMonthKey, expenseId }],
-      } : item)));
-    });
-  }, [dataLoaded, obligations, monthKeyOf(now)]);
 
   if (stage === 'welcome') {
     return <WelcomeScreen colors={colors} dark={isDark} onEnter={() => setStage('app')} />;
@@ -4861,8 +4753,7 @@ function DailyOSApp() {
           {page === 'financial' && <FinancialPage colors={colors} financial={financial} now={now} />}
           {page === 'immigration' && <ImmigrationPage colors={colors} immigration={immigration} now={now} />}
           {page === 'occasions' && <OccasionsPage colors={colors} occasions={occasions} setOccasions={setOccasions} immigration={immigration} now={now} />}
-          {page === 'qrcode' && <QRCodePage colors={colors} />}
-          {page !== 'dashboard' && page !== 'financial' && page !== 'immigration' && page !== 'occasions' && page !== 'qrcode' && <PlaceholderPage colors={colors} page={page} />}
+          {page !== 'dashboard' && page !== 'financial' && page !== 'immigration' && page !== 'occasions' && <PlaceholderPage colors={colors} page={page} />}
         </main>
       </div>
     </div>
