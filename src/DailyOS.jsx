@@ -2772,58 +2772,85 @@ function DebtCard({ colors, debt, debtPayments, plannedDebtPayments, monthKey, n
   }
 
   return (
-    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 14 }}>
-  {debt.debtType === 'Long-term' ? (
-    <>
-      <button
-        onClick={() => setRecordModal({})}
-        style={{
-          display: 'flex', alignItems: 'center', gap: 5, padding: '7px 12px', borderRadius: 999,
-          border: 'none', background: colors.accent, color: '#FFFFFF', fontSize: 12, fontWeight: 500, cursor: 'pointer',
-        }}
-      ><Plus size={12} /> Record payment</button>
-      <button
-        onClick={() => setPlanModal({})}
-        style={{
-          display: 'flex', alignItems: 'center', gap: 5, padding: '7px 12px', borderRadius: 999,
-          border: `1px solid ${colors.border}`, background: 'transparent', color: colors.textSecondary, fontSize: 12, fontWeight: 500, cursor: 'pointer',
-        }}
-      ><CalendarClock size={12} /> Plan payment</button>
-    </>
-  ) : (
-    !isPaidOff && (
-      confirmingPaid ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 11.5, color: colors.textSecondary }}>
-            Record {fmtCurrency(outstanding)} as a Debt Repayment expense today?
-          </span>
-          <button
-            onClick={handleMarkFullyPaid}
-            style={{ fontSize: 11.5, fontWeight: 600, padding: '6px 10px', borderRadius: 999, border: 'none', background: colors.accent, color: '#FFFFFF', cursor: 'pointer' }}
-          >Confirm</button>
-          <button
-            onClick={() => setConfirmingPaid(false)}
-            style={{ fontSize: 11.5, fontWeight: 500, padding: '6px 10px', borderRadius: 999, border: `1px solid ${colors.border}`, background: 'transparent', color: colors.textSecondary, cursor: 'pointer' }}
-          >Cancel</button>
+    <div style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '16px 18px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontSize: 11.5, color: colors.textFaint, marginBottom: 2 }}>{person}</div>
+          <div style={{ fontSize: 15, fontWeight: 600, color: colors.textPrimary }}>{debt.name}</div>
         </div>
+        <StatusBadge colors={colors} tone={isPaidOff ? 'safe' : 'accent'} label={isPaidOff ? 'Paid Off' : 'Active'} />
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 14 }}>
+        <span style={{ fontSize: 20, fontWeight: 600, color: colors.textPrimary }}>{fmtCurrency(outstanding)}</span>
+        <span style={{ fontSize: 11.5, color: colors.textFaint }}>of {fmtCurrency(debt.originalAmount)} original</span>
+      </div>
+      <div style={{ height: 6, borderRadius: 999, background: colors.surfaceMuted, overflow: 'hidden', marginTop: 8 }}>
+        <div style={{ height: '100%', width: `${Math.min(100, percentPaid)}%`, background: colors.accent, borderRadius: 999 }} />
+      </div>
+      <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 4 }}>{percentPaid.toFixed(1)}% repaid</div>
+
+      <div style={{ display: 'flex', gap: 16, marginTop: 12 }}>
+        <div>
+          <div style={{ fontSize: 11, color: colors.textFaint }}>Current monthly interest</div>
+          <div style={{ fontSize: 13.5, fontWeight: 600, color: colors.textPrimary }}>
+            {currentPeriod ? fmtCurrency(currentPeriod.monthlyInterestAmount) : '—'}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 14 }}>
+      {debt.debtType === 'Long-term' ? (
+        <>
+          <button
+            onClick={() => setRecordModal({})}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 5, padding: '7px 12px', borderRadius: 999,
+              border: 'none', background: colors.accent, color: '#FFFFFF', fontSize: 12, fontWeight: 500, cursor: 'pointer',
+            }}
+          ><Plus size={12} /> Record payment</button>
+          <button
+            onClick={() => setPlanModal({})}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 5, padding: '7px 12px', borderRadius: 999,
+              border: `1px solid ${colors.border}`, background: 'transparent', color: colors.textSecondary, fontSize: 12, fontWeight: 500, cursor: 'pointer',
+            }}
+          ><CalendarClock size={12} /> Plan payment</button>
+        </>
       ) : (
-        <button
-          onClick={() => setConfirmingPaid(true)}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 5, padding: '7px 12px', borderRadius: 999,
-            border: 'none', background: colors.accent, color: '#FFFFFF', fontSize: 12, fontWeight: 500, cursor: 'pointer',
-          }}
-        ><Check size={12} /> Paid</button>
-      )
-    )
-  )}
-  <button
-    onClick={() => setExpanded((v) => !v)}
-    style={{
-      marginLeft: 'auto', fontSize: 12, color: colors.accent, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 500,
-    }}
-  >{expanded ? 'Hide history' : 'History'}</button>
-</div>
+        !isPaidOff && (
+          confirmingPaid ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 11.5, color: colors.textSecondary }}>
+                Record {fmtCurrency(outstanding)} as a Debt Repayment expense today?
+              </span>
+              <button
+                onClick={handleMarkFullyPaid}
+                style={{ fontSize: 11.5, fontWeight: 600, padding: '6px 10px', borderRadius: 999, border: 'none', background: colors.accent, color: '#FFFFFF', cursor: 'pointer' }}
+              >Confirm</button>
+              <button
+                onClick={() => setConfirmingPaid(false)}
+                style={{ fontSize: 11.5, fontWeight: 500, padding: '6px 10px', borderRadius: 999, border: `1px solid ${colors.border}`, background: 'transparent', color: colors.textSecondary, cursor: 'pointer' }}
+              >Cancel</button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setConfirmingPaid(true)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 5, padding: '7px 12px', borderRadius: 999,
+                border: 'none', background: colors.accent, color: '#FFFFFF', fontSize: 12, fontWeight: 500, cursor: 'pointer',
+              }}
+            ><Check size={12} /> Paid</button>
+          )
+        )
+      )}
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        style={{
+          marginLeft: 'auto', fontSize: 12, color: colors.accent, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 500,
+        }}
+      >{expanded ? 'Hide history' : 'History'}</button>
+    </div>
 
       {expanded && (
         <div style={{ marginTop: 14, borderTop: `1px solid ${colors.border}`, paddingTop: 14 }}>
