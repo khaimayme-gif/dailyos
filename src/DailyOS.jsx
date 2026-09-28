@@ -535,6 +535,65 @@ function addDays(dateStr, n) {
 function toDateStr(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
+function daysBetween(aStr, bStr) {
+  return Math.round((parseDateOnly(bStr) - parseDateOnly(aStr)) / 86400000);
+}
+
+/**
+ * Pay-cycle engine (Financial only; the Occasions calendar month is
+ * unrelated). A cycle starts on the date of each 'Salary' income entry and
+ * runs until the day before the next one; the latest stays open ("current").
+ * Nothing resets on the 1st of a month.
+ */
+function deriveCycles(incomes) {
+  const salaryDates = [...new Set(
+    incomes.filter((i) => i.type === 'Salary').map((i) => i.date).filter(Boolean)
+  )].sort();
+
+  if (salaryDates.length === 0) {
+    // No salary recorded yet: one open cycle so everything still works.
+    return [{ id: 'all', start: null, end: null, isCurrent: true }];
+  }
+  return salaryDates.map((start, i) => {
+    const next = salaryDates[i + 1];
+    const end = next ? addDays(next, -1) : null;
+    return { id: start, start, end, isCurrent: end === null };
+  });
+}
+function inCycle(dateStr, cycle) {
+  if (!dateStr) return false;
+  if (cycle.start && dateStr < cycle.start) return false;
+  if (cycle.end && dateStr > cycle.end) return false;
+  return true;
+}
+function fmtCycleDate(dateStr) {
+  return parseDateOnly(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+function cycleLabel(cycle) {
+  if (!cycle.start) return 'All time (no salary recorded yet)';
+  return `${fmtCycleDate(cycle.start)} \u2013 ${cycle.end ? fmtCycleDate(cycle.end) : 'Present'}`;
+}
+/** Cumulative balance as of a date: the starting balance plus everything ever
+ * recorded up to and including that date. A new cycle never resets this, so
+ * leftover money carries over automatically. */
+function runningBalanceAsOf(asOfDateStr, incomes, expenses, balances) {
+  const sum = (list) => list.reduce((s, r) => s + Number(r.amount || 0), 0);
+  const incomeTo = incomes.filter((r) => r.date <= asOfDateStr);
+  const expenseTo = expenses.filter((r) => r.date <= asOfDateStr);
+  const cashBalance = Number(balances.cash || 0)
+    + sum(incomeTo.filter((r) => r.account === 'Cash'))
+    - sum(expenseTo.filter((r) => r.paymentMethod === 'Cash'));
+  const bankBalance = Number(balances.bank || 0)
+    + sum(incomeTo.filter((r) => r.account !== 'Cash'))
+    - sum(expenseTo.filter((r) => r.paymentMethod !== 'Cash'));
+  return { cashBalance, bankBalance, totalAvailable: cashBalance + bankBalance };
+}
+/** Cycle-aware version of obligationAppliesToMonth. */
+function obligationAppliesToCycle(o, cycle) {
+  if (o.frequency === 'One-time') return inCycle(o.dueDate, cycle);
+  if (!cycle.start) return true;
+  return o.dueDate <= (cycle.end || '9999-12-31');
+}
 function lastDayOfMonth(y, m) {
   return new Date(y, m, 0).getDate(); // m is 1-12, day 0 of next month = last day of this month
 }
@@ -839,36 +898,42 @@ function fmtYearsMonths(expirationDate, now) {
   return parts.join(' ') + ' remaining';
 }
 
-function useFinancialTotals({ incomes, expenses, obligations, balances, categories, monthKey, now }) {
+function useFinancialTotals({ incomes, expenses, obligations, balances, categories, cycles, cycleId, now }) {
   return useMemo(() => {
-    const monthIncomes = incomes.filter((r) => inMonth(r.date, monthKey));
-    const monthExpenses = expenses.filter((r) => inMonth(r.date, monthKey));
-    const monthObligations = obligations.filter((o) => o.active !== false && obligationAppliesToMonth(o, monthKey));
+    const cycle = cycles.find((c) => c.id === cycleId) || cycles[cycles.length - 1];
+    const cycleIndex = cycles.findIndex((c) => c.id === cycle.id);
+    const asOfDate = cycle.end || toDateStr(now);
+
+    const monthIncomes = incomes.filter((r) => inCycle(r.date, cycle));
+    const monthExpenses = expenses.filter((r) => inCycle(r.date, cycle));
+    const monthObligations = obligations.filter((o) => o.active !== false && obligationAppliesToCycle(o, cycle));
 
     const totalIncome = monthIncomes.reduce((s, r) => s + Number(r.amount || 0), 0);
     const totalSpending = monthExpenses.reduce((s, r) => s + Number(r.amount || 0), 0);
     const totalObligations = monthObligations.reduce((s, o) => s + Number(o.amount || 0), 0);
     const unpaidObligations = monthObligations
-      .filter((o) => !(o.paidMonths && o.paidMonths.includes(monthKey)))
+      // paidMonths is being repurposed to hold cycle ids (a salary date
+      // string) instead of calendar month keys.
+      .filter((o) => !(o.paidMonths && o.paidMonths.includes(cycle.id)))
       .reduce((s, o) => s + Number(o.amount || 0), 0);
 
+    // This-cycle change only (income - spending - unpaid commitments).
     const availableMoney = totalIncome - totalSpending - unpaidObligations;
 
-    const cashIncome = monthIncomes.filter((r) => r.account === 'Cash').reduce((s, r) => s + Number(r.amount || 0), 0);
-    const bankIncome = monthIncomes.filter((r) => r.account !== 'Cash').reduce((s, r) => s + Number(r.amount || 0), 0);
-    const cashExpense = monthExpenses.filter((r) => r.paymentMethod === 'Cash').reduce((s, r) => s + Number(r.amount || 0), 0);
-    const bankExpense = monthExpenses.filter((r) => r.paymentMethod === 'Bank').reduce((s, r) => s + Number(r.amount || 0), 0);
-
-    const cashBalance = Number(balances.cash || 0) + cashIncome - cashExpense;
-    const bankBalance = Number(balances.bank || 0) + bankIncome - bankExpense;
-    const totalAvailable = cashBalance + bankBalance;
+    // Cumulative balance: this is what carries leftover money into a new cycle.
+    const { cashBalance, bankBalance, totalAvailable } = runningBalanceAsOf(asOfDate, incomes, expenses, balances);
     const spendableMoney = totalAvailable - unpaidObligations;
 
-    const isCurrentMonth = monthKeyOf(now) === monthKey;
-    const totalDays = daysInMonthOf(monthKey);
-    const remainingDays = isCurrentMonth ? Math.max(totalDays - now.getDate() + 1, 1) : totalDays;
-
-    const dailyGuide = spendableMoney > 0 ? spendableMoney / remainingDays : 0;
+    // Pay cycles have no fixed length, so "days left" is estimated from your
+    // previous cycle's length (30 days if there isn't one yet).
+    let remainingDays = 1;
+    if (cycle.isCurrent) {
+      const prev = cycles[cycleIndex - 1];
+      const estimatedLength = prev && prev.start && prev.end ? daysBetween(prev.start, prev.end) + 1 : 30;
+      const daysElapsed = cycle.start ? daysBetween(cycle.start, toDateStr(now)) + 1 : 1;
+      remainingDays = Math.max(estimatedLength - daysElapsed + 1, 1);
+    }
+    const dailyGuide = cycle.isCurrent && spendableMoney > 0 ? spendableMoney / remainingDays : 0;
     const weeklyGuide = dailyGuide * 7;
 
     const incomeByType = INCOME_TYPES.map((type) => ({
@@ -893,13 +958,14 @@ function useFinancialTotals({ incomes, expenses, obligations, balances, categori
     })).filter((r) => r.amount > 0);
 
     return {
+      cycle, isCurrentCycle: cycle.isCurrent,
       totalIncome, totalSpending, totalObligations, unpaidObligations, availableMoney,
       cashBalance, bankBalance, totalAvailable, spendableMoney,
       dailyGuide, weeklyGuide, remainingDays,
       incomeByType, incomeByPerson, spendingByCategory, spendingByPerson,
       monthIncomes, monthExpenses,
     };
-  }, [incomes, expenses, obligations, balances, monthKey, now]);
+  }, [incomes, expenses, obligations, balances, cycles, cycleId, now]);
 }
 
 function SummaryCard({ colors, icon: Icon, label, value, sub, tone = 'accent' }) {
@@ -957,6 +1023,38 @@ function MonthSelector({ colors, monthKey, setMonthKey }) {
   );
 }
 
+function CyclePicker({ colors, cycles, cycleId, setCycleId }) {
+  const index = Math.max(cycles.findIndex((c) => c.id === cycleId), 0);
+  const cycle = cycles[index] ?? cycles[cycles.length - 1];
+  const canGoBack = index > 0;
+  const canGoForward = index < cycles.length - 1;
+  const navStyle = (enabled) => ({
+    width: 30, height: 30, borderRadius: 8, border: `1px solid ${colors.border}`,
+    background: colors.surface, color: enabled ? colors.textSecondary : colors.textFaint,
+    cursor: enabled ? 'pointer' : 'default', opacity: enabled ? 1 : 0.5,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+  });
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      <button onClick={() => canGoBack && setCycleId(cycles[index - 1].id)} disabled={!canGoBack} style={navStyle(canGoBack)} aria-label="Previous cycle">
+        <ChevronLeft size={15} />
+      </button>
+      <span style={{ fontSize: 14, fontWeight: 600, color: colors.textPrimary, minWidth: 130, textAlign: 'center' }}>
+        {cycleLabel(cycle)}
+      </span>
+      <button onClick={() => canGoForward && setCycleId(cycles[index + 1].id)} disabled={!canGoForward} style={navStyle(canGoForward)} aria-label="Next cycle">
+        <ChevronRight size={15} />
+      </button>
+      {!cycle.isCurrent && (
+        <button
+          onClick={() => setCycleId(cycles[cycles.length - 1].id)}
+          style={{ fontSize: 11.5, color: colors.accent, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}
+        >Back to current</button>
+      )}
+    </div>
+  );
+}
+
 function BalanceEditor({ colors, balances, setBalances, totals }) {
   const [editing, setEditing] = useState(false);
   const [cash, setCash] = useState(balances.cash);
@@ -970,15 +1068,19 @@ function BalanceEditor({ colors, balances, setBalances, totals }) {
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
           <span style={{ fontSize: 13, fontWeight: 600, color: colors.textPrimary }}>Your money</span>
-          <button
-            onClick={() => { setCash(balances.cash); setBank(balances.bank); setEditing(true); }}
-            style={{
-              fontSize: 12, fontWeight: 500, color: colors.accent, background: 'transparent',
-              border: 'none', cursor: 'pointer', padding: 0,
-            }}
-          >
-            Edit starting balance
-          </button>
+          {totals.isCurrentCycle ? (
+            <button
+              onClick={() => { setCash(balances.cash); setBank(balances.bank); setEditing(true); }}
+              style={{
+                fontSize: 12, fontWeight: 500, color: colors.accent, background: 'transparent',
+                border: 'none', cursor: 'pointer', padding: 0,
+              }}
+            >
+              Edit starting balance
+            </button>
+          ) : (
+            <span style={{ fontSize: 11.5, color: colors.textFaint }}>Past cycle (view only)</span>
+          )}
         </div>
         <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -1012,6 +1114,11 @@ function BalanceEditor({ colors, balances, setBalances, totals }) {
             </div>
           </div>
         </div>
+        {!totals.isCurrentCycle && totals.cycle.end && (
+          <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 10 }}>
+            Balance as it stood at the end of this cycle ({fmtCycleDate(totals.cycle.end)}).
+          </div>
+        )}
       </div>
     );
   }
@@ -1074,6 +1181,14 @@ function BalanceEditor({ colors, balances, setBalances, totals }) {
 }
 
 function SpendingGuide({ colors, totals }) {
+  if (!totals.isCurrentCycle) {
+    return (
+      <div style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '16px 18px' }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: colors.textPrimary, marginBottom: 4 }}>Spending guide</div>
+        <div style={{ fontSize: 12, color: colors.textFaint }}>Only shown for the current cycle. This one has already ended.</div>
+      </div>
+    );
+  }
   return (
     <div style={{
       background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 14,
@@ -1083,11 +1198,11 @@ function SpendingGuide({ colors, totals }) {
         Spending guide
       </div>
       <div style={{ fontSize: 11.5, color: colors.textFaint, marginBottom: 14 }}>
-        Based on spendable money and {totals.remainingDays} day{totals.remainingDays === 1 ? '' : 's'} remaining
+        Based on spendable money and about {totals.remainingDays} day{totals.remainingDays === 1 ? '' : 's'} left in this cycle (estimated)
       </div>
       <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap' }}>
         <div>
-          <div style={{ fontSize: 11, color: colors.textFaint }}>Monthly available</div>
+          <div style={{ fontSize: 11, color: colors.textFaint }}>Available to spend</div>
           <div style={{ fontSize: 16, fontWeight: 600, color: colors.textPrimary }}>{fmtCurrency(totals.spendableMoney)}</div>
         </div>
         <div>
@@ -1114,19 +1229,21 @@ function EmptyRow({ colors, text }) {
   );
 }
 
-function FinancialOverviewTab({ colors, totals, monthKey, setMonthKey, balances, setBalances, debtTotals }) {
+function FinancialOverviewTab({ colors, financial, now }) {
+  const { incomes, expenses, obligations, categories, balances, setBalances, cycles, cycleId, setCycleId, debtTotals } = financial;
+  const totals = useFinancialTotals({ incomes, expenses, obligations, categories, balances, cycles, cycleId, now });
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
         <span style={{ fontSize: 13, color: colors.textSecondary }}>Combined household finances</span>
-        <MonthSelector colors={colors} monthKey={monthKey} setMonthKey={setMonthKey} />
+        <CyclePicker colors={colors} cycles={cycles} cycleId={totals.cycle.id} setCycleId={setCycleId} />
       </div>
 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
         <SummaryCard colors={colors} icon={TrendingUp} label="Total income" value={fmtCurrency(totals.totalIncome)} tone="safe" />
         <SummaryCard colors={colors} icon={TrendingDown} label="Total spending" value={fmtCurrency(totals.totalSpending)} tone="urgent" />
         <SummaryCard colors={colors} icon={ListChecks} label="Financial obligations" value={fmtCurrency(totals.totalObligations)} tone="upcoming" />
-        <SummaryCard colors={colors} icon={Scale} label="Available money" value={fmtCurrency(totals.availableMoney)} tone="accent" sub="Income − spending − unpaid obligations" />
+        <SummaryCard colors={colors} icon={Scale} label="Available to spend" value={fmtCurrency(totals.spendableMoney)} tone="accent" sub="Includes leftover from earlier cycles" />
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
@@ -1302,7 +1419,7 @@ function IncomeModal({ colors, onClose, onSave, initial }) {
   const personId = initial?.personId || currentPersonId;
   const [type, setType] = useState(initial?.type || INCOME_TYPES[0]);
   const [amount, setAmount] = useState(initial?.amount ?? '');
-  const [date, setDate] = useState(initial?.date || monthKeyOf(new Date()) + '-01');
+  const [date, setDate] = useState(initial?.date || toDateStr(new Date()));
   const [notes, setNotes] = useState(initial?.notes || '');
   const [errors, setErrors] = useState({});
 
@@ -1404,8 +1521,9 @@ function IncomeRow({ colors, record, onEdit, onDelete }) {
   );
 }
 
-function FinancialIncomeTab({ colors, financial }) {
-  const { incomes, setIncomes, monthKey, setMonthKey, totals } = financial;
+function FinancialIncomeTab({ colors, financial, now }) {
+  const { incomes, setIncomes, expenses, obligations, categories, balances, cycles, cycleId, setCycleId } = financial;
+  const totals = useFinancialTotals({ incomes, expenses, obligations, categories, balances, cycles, cycleId, now });
   const [modalOpen, setModalOpen] = useState(false);
   const [editRecord, setEditRecord] = useState(null);
   const [personFilter, setPersonFilter] = useState('All');
@@ -1440,7 +1558,7 @@ function FinancialIncomeTab({ colors, financial }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-        <MonthSelector colors={colors} monthKey={monthKey} setMonthKey={setMonthKey} />
+        <CyclePicker colors={colors} cycles={cycles} cycleId={totals.cycle.id} setCycleId={setCycleId} />
         <button
           onClick={() => { setEditRecord(null); setModalOpen(true); }}
           style={{
@@ -1456,7 +1574,7 @@ function FinancialIncomeTab({ colors, financial }) {
         <div style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '16px 18px' }}>
           <div style={{ fontSize: 13, fontWeight: 600, color: colors.textPrimary, marginBottom: 10 }}>Income by type</div>
           {totals.incomeByType.every((t) => t.amount === 0) ? (
-            <EmptyRow colors={colors} text="No income recorded for this month yet." />
+            <EmptyRow colors={colors} text="No income recorded in this cycle yet." />
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
               {totals.incomeByType.map((t) => (
@@ -1500,7 +1618,7 @@ function FinancialIncomeTab({ colors, financial }) {
         </div>
 
         {filtered.length === 0 ? (
-          <EmptyRow colors={colors} text={`No income recorded for ${monthLabel(monthKey)} yet.`} />
+          <EmptyRow colors={colors} text={`No income recorded for ${cycleLabel(totals.cycle)} yet.`} />
         ) : (
           <div>
             {filtered.map((r) => (
@@ -1788,7 +1906,8 @@ function CategoryManager({ colors, categories, setCategories, expenses, onClose 
 }
 
 function FinancialExpensesTab({ colors, financial, now }) {
-  const { expenses, setExpenses, categories, setCategories, monthKey, setMonthKey, totals, obligations } = financial;
+  const { incomes, expenses, setExpenses, categories, setCategories, cycles, cycleId, setCycleId, balances, obligations } = financial;
+  const totals = useFinancialTotals({ incomes, expenses, obligations, categories, balances, cycles, cycleId, now });
   const [modalOpen, setModalOpen] = useState(false);
   const [editRecord, setEditRecord] = useState(null);
   const [categoryModalOpen, setCategoryModalOpen] = useState(false);
@@ -1822,7 +1941,7 @@ function FinancialExpensesTab({ colors, financial, now }) {
 
   const todayStr = toDateStr(now);
   const filtered = totals.monthExpenses
-    .filter((r) => dateFilter === 'This month' || r.date === todayStr)
+    .filter((r) => dateFilter === 'This cycle' || r.date === todayStr)
     .filter((r) => personFilter === 'All' || USERS.find((u) => u.id === r.personId)?.name === personFilter)
     .filter((r) => categoryFilter === 'All' || categoryName(r.categoryId) === categoryFilter)
     .filter((r) => paymentFilter === 'All' || r.paymentMethod === paymentFilter)
@@ -1831,7 +1950,7 @@ function FinancialExpensesTab({ colors, financial, now }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-        <MonthSelector colors={colors} monthKey={monthKey} setMonthKey={setMonthKey} />
+        <CyclePicker colors={colors} cycles={cycles} cycleId={totals.cycle.id} setCycleId={setCycleId} />
         <div style={{ display: 'flex', gap: 8 }}>
           <button
             onClick={() => setCategoryModalOpen(true)}
@@ -1884,7 +2003,7 @@ function FinancialExpensesTab({ colors, financial, now }) {
           <span style={{ fontSize: 13, fontWeight: 600, color: colors.textPrimary }}>Expense records</span>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
-        <FilterPills colors={colors} options={['Today', 'This month']} value={dateFilter} onChange={setDateFilter} />
+        <FilterPills colors={colors} options={['Today', 'This cycle']} value={dateFilter} onChange={setDateFilter} />
         <FilterPills colors={colors} options={['All', 'Miki', 'Alex', 'Shared']} value={personFilter} onChange={setPersonFilter} />
         <FilterPills colors={colors} options={['All', ...PAYMENT_METHODS]} value={paymentFilter} onChange={setPaymentFilter} />
         
@@ -1898,7 +2017,7 @@ function FinancialExpensesTab({ colors, financial, now }) {
         </div>
 
         {filtered.length === 0 ? (
-          <EmptyRow colors={colors} text={dateFilter === 'Today' ? 'No expenses recorded today yet.' : `No expenses recorded for ${monthLabel(monthKey)} yet.`} />
+          <EmptyRow colors={colors} text={dateFilter === 'Today' ? 'No expenses recorded today yet.' : `No expenses recorded for ${cycleLabel(totals.cycle)} yet.`} />
         ) : (
           <div>
             {filtered.map((r) => (
@@ -3107,7 +3226,6 @@ function FinancialDebtTab({ colors, financial, now }) {
 
 function FinancialPage({ colors, financial, now }) {
   const [tab, setTab] = useState('overview');
-  const { monthKey, setMonthKey, balances, setBalances, totals, debtTotals } = financial;
 
   return (
     <div style={{ padding: '20px 24px 40px' }}>
@@ -3135,13 +3253,8 @@ function FinancialPage({ colors, financial, now }) {
         })}
       </div>
 
-      {tab === 'overview' && (
-        <FinancialOverviewTab
-          colors={colors} totals={totals} monthKey={monthKey} setMonthKey={setMonthKey}
-          balances={balances} setBalances={setBalances} debtTotals={debtTotals}
-        />
-      )}
-      {tab === 'income' && <FinancialIncomeTab colors={colors} financial={financial} />}
+      {tab === 'overview' && <FinancialOverviewTab colors={colors} financial={financial} now={now} />}
+      {tab === 'income' && <FinancialIncomeTab colors={colors} financial={financial} now={now} />}
       {tab === 'expenses' && <FinancialExpensesTab colors={colors} financial={financial} now={now} />}
       {tab === 'obligations' && <FinancialObligationsTab colors={colors} financial={financial} now={now} />}
       {tab === 'debt' && <FinancialDebtTab colors={colors} financial={financial} now={now} />}
@@ -4722,11 +4835,21 @@ function DailyOSApp() {
   const [plannedDebtPayments, setPlannedDebtPayments, plannedDebtLoaded] = useSyncedCollection('planned_debt_payments');
   const [monthKey, setMonthKey] = useState(() => monthKeyOf(now));
 
-  const totals = useFinancialTotals({ incomes, expenses, obligations, balances, categories, monthKey, now });
+  // Pay cycles (Financial). `browsedCycleId` is what the Financial tabs are
+  // looking at; null means "follow the current cycle" so it advances by
+  // itself the moment you record a new Salary.
+  const cycles = useMemo(() => deriveCycles(incomes), [incomes]);
+  const currentCycleId = cycles[cycles.length - 1].id;
+  const [browsedCycleId, setBrowsedCycleId] = useState(null);
+  const cycleId = browsedCycleId && cycles.some((c) => c.id === browsedCycleId) ? browsedCycleId : currentCycleId;
+  const setCycleId = (id) => setBrowsedCycleId(id === currentCycleId ? null : id);
+
+  // Always the CURRENT cycle: used by the Dashboard and suggestions.
+  const totals = useFinancialTotals({ incomes, expenses, obligations, balances, categories, cycles, cycleId: currentCycleId, now });
   const debtTotals = useDebtTotals({ debts, debtPayments, plannedDebtPayments, monthKey });
   const financial = {
     incomes, setIncomes, expenses, setExpenses, obligations, setObligations,
-    categories, setCategories, balances, setBalances, monthKey, setMonthKey, totals,
+    categories, setCategories, balances, setBalances, monthKey, setMonthKey, cycles, cycleId, setCycleId, totals,
     debts, setDebts, debtPayments, setDebtPayments, plannedDebtPayments, setPlannedDebtPayments, debtTotals,
   };
 
