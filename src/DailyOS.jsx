@@ -2812,7 +2812,7 @@ function DebtCard({ colors, debt, debtPayments, plannedDebtPayments, monthKey, c
   const [recordModal, setRecordModal] = useState(null); // { initial?, plannedId? } | null
   const [planModal, setPlanModal] = useState(null); // { initial? } | null
 
-  const { setDebts, setDebtPayments, setPlannedDebtPayments, setExpenses, setBalances, categories, setCategories } = financial;
+  const { setDebts, setDebtPayments, setPlannedDebtPayments, expenses, setExpenses, setBalances, categories, setCategories } = financial;
 
   const person = USERS.find((u) => u.id === debt.personId)?.name || debt.personId;
   const outstanding = debtOutstandingBalance(debt, debtPayments);
@@ -2865,28 +2865,31 @@ function DebtCard({ colors, debt, debtPayments, plannedDebtPayments, monthKey, c
     showToast(`${debt.name} marked as paid — recorded as an expense`);
   }
 
-  function applyPaymentEffects(payment, sign) {
-    // sign = +1 to apply, -1 to reverse
-    if (Number(payment.principalAmount) > 0) {
+  // The principal part of a payment is recorded as a Debt Repayment expense
+  // (id `<paymentId>-principal`), dated on the payment, so it lands in the right
+  // pay cycle and never rewrites the starting balance (which would change every
+  // past cycle). Payments saved before this change have no such expense and
+  // instead bumped the starting balance; reversing those keeps the old math.
+  function principalExpenseId(payment) { return `${payment.id}-principal`; }
+  function hasLegacyBalanceEffect(payment) {
+    return Number(payment.principalAmount) > 0
+      && payment.notes !== 'Full payoff'
+      && !expenses.some((e) => e.id === principalExpenseId(payment));
+  }
+  function reversePaymentEffects(payment) {
+    if (hasLegacyBalanceEffect(payment)) {
       const key = payment.paymentMethod === 'Cash' ? 'cash' : 'bank';
-      setBalances((prev) => ({
-        ...prev,
-        [key]: Number(prev[key] || 0) + sign * Number(payment.principalAmount),
-      }));
+      setBalances((prev) => ({ ...prev, [key]: Number(prev[key] || 0) - Number(payment.principalAmount) }));
     }
+    const ids = [payment.expenseId, principalExpenseId(payment)].filter(Boolean);
+    setExpenses((prev) => prev.filter((e) => !ids.includes(e.id)));
   }
 
   function handleRecordSave(payment) {
     const isEdit = !!recordModal?.initial;
-    let expenseId = payment.expenseId;
+    let expenseId = null;
 
-    if (isEdit) {
-      // reverse the old payment's effects first
-      const old = recordModal.initial;
-      applyPaymentEffects(old, -1);
-      if (old.expenseId) setExpenses((prev) => prev.filter((e) => e.id !== old.expenseId));
-      expenseId = null;
-    }
+    if (isEdit) reversePaymentEffects(recordModal.initial);
 
     if (payment.interestAmount > 0) {
       expenseId = genId();
@@ -2895,11 +2898,15 @@ function DebtCard({ colors, debt, debtPayments, plannedDebtPayments, monthKey, c
         amount: payment.interestAmount, date: payment.paymentDate, paymentMethod: payment.paymentMethod,
         notes: `Interest — ${debt.name}`,
       }]);
-    } else {
-      expenseId = null;
     }
-
-    applyPaymentEffects(payment, 1);
+    if (payment.principalAmount > 0) {
+      const categoryId = getOrCreateDebtRepaymentCategoryId();
+      setExpenses((prev) => [...prev, {
+        id: principalExpenseId(payment), personId: debt.personId, categoryId,
+        amount: payment.principalAmount, date: payment.paymentDate, paymentMethod: payment.paymentMethod,
+        notes: `Principal — ${debt.name}`,
+      }]);
+    }
 
     setDebtPayments((prev) => {
       const exists = prev.some((p) => p.id === payment.id);
@@ -2916,8 +2923,7 @@ function DebtCard({ colors, debt, debtPayments, plannedDebtPayments, monthKey, c
   }
 
   function handleDeletePayment(payment) {
-    applyPaymentEffects(payment, -1);
-    if (payment.expenseId) setExpenses((prev) => prev.filter((e) => e.id !== payment.expenseId));
+    reversePaymentEffects(payment);
     setDebtPayments((prev) => prev.filter((p) => p.id !== payment.id));
     showToast('Payment deleted');
   }
@@ -3099,7 +3105,8 @@ function DebtCard({ colors, debt, debtPayments, plannedDebtPayments, monthKey, c
           <>
             <button
               onClick={() => {
-                const linkedExpenseIds = debtPaymentsForDebt(debt.id, debtPayments).map((p) => p.expenseId).filter(Boolean);
+                const debtPaymentList = debtPaymentsForDebt(debt.id, debtPayments);
+                const linkedExpenseIds = debtPaymentList.flatMap((p) => [p.expenseId, principalExpenseId(p)]).filter(Boolean);
                 if (linkedExpenseIds.length > 0) setExpenses((prev) => prev.filter((e) => !linkedExpenseIds.includes(e.id)));
                 setDebtPayments((prev) => prev.filter((p) => p.debtId !== debt.id));
                 setPlannedDebtPayments((prev) => prev.filter((p) => p.debtId !== debt.id));
