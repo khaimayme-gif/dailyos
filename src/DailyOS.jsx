@@ -842,8 +842,17 @@ function debtOutstandingBalance(debt, debtPayments) {
 function debtPaymentsForDebt(debtId, debtPayments) {
   return debtPayments.filter((p) => p.debtId === debtId);
 }
-function useDebtTotals({ debts, debtPayments, plannedDebtPayments, monthKey }) {
+/** The 'YYYY-MM' used to look up the interest period that applies to a pay
+ * cycle: the month the cycle ends in (or today's month for the open one), so
+ * a newly added interest period takes effect straight away. */
+function cycleInterestMonthKey(cycle, now) {
+  return (cycle.end || toDateStr(now)).slice(0, 7);
+}
+function useDebtTotals({ debts, debtPayments: allDebtPayments, plannedDebtPayments, cycle, now }) {
   return useMemo(() => {
+    const monthKey = cycleInterestMonthKey(cycle, now);
+    // Past cycles show the debt as it stood on their last day.
+    const debtPayments = cycle.end ? allDebtPayments.filter((p) => p.paymentDate <= cycle.end) : allDebtPayments;
     const activeDebts = debts.filter((d) => (d.status || 'Active') !== 'Paid Off');
     const totalOutstanding = debts.reduce((s, d) => s + debtOutstandingBalance(d, debtPayments), 0);
     const totalOriginal = debts.reduce((s, d) => s + Number(d.originalAmount || 0), 0);
@@ -857,7 +866,7 @@ function useDebtTotals({ debts, debtPayments, plannedDebtPayments, monthKey }) {
       const period = currentInterestPeriod(d.interestSchedule, monthKey);
       return s + Number(period?.monthlyInterestAmount || 0);
     }, 0);
-    const monthPayments = debtPayments.filter((p) => inMonth(p.paymentDate, monthKey));
+    const monthPayments = allDebtPayments.filter((p) => inCycle(p.paymentDate, cycle));
     const interestPaidThisMonth = monthPayments.reduce((s, p) => s + Number(p.interestAmount || 0), 0);
     const principalPaidThisMonth = monthPayments.reduce((s, p) => s + Number(p.principalAmount || 0), 0);
     const totalPaidThisMonth = interestPaidThisMonth + principalPaidThisMonth;
@@ -872,7 +881,7 @@ function useDebtTotals({ debts, debtPayments, plannedDebtPayments, monthKey }) {
       interestPaidThisMonth, principalPaidThisMonth, totalPaidThisMonth,
       nextPlanned, upcomingPlanned: upcoming, percentPaid,
     };
-  }, [debts, debtPayments, plannedDebtPayments, monthKey]);
+  }, [debts, allDebtPayments, plannedDebtPayments, cycle, now]);
 }
 
 function visaStatus(expirationDate, now) {
@@ -992,7 +1001,7 @@ function SummaryCard({ colors, icon: Icon, label, value, sub, tone = 'accent' })
   const toneColor = colors[tone] || colors.accent;
   const toneSoft = colors[`${tone}Soft`] || colors.accentSoft;
   return (
-    <div style={{
+    <div className="dos-card" style={{
       background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 14,
       padding: '16px 18px', flex: '1 1 180px', minWidth: 160,
     }}>
@@ -1055,11 +1064,11 @@ function CyclePicker({ colors, cycles, cycleId, setCycleId }) {
     display: 'flex', alignItems: 'center', justifyContent: 'center',
   });
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+    <div className="dos-cycle" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
       <button onClick={() => canGoBack && setCycleId(cycles[index - 1].id)} disabled={!canGoBack} style={navStyle(canGoBack)} aria-label="Previous cycle">
         <ChevronLeft size={15} />
       </button>
-      <span style={{ fontSize: 14, fontWeight: 600, color: colors.textPrimary, minWidth: 120, textAlign: 'center' }}>
+      <span style={{ fontSize: 14, fontWeight: 600, color: colors.textPrimary, minWidth: 120, textAlign: 'center' }} className="dos-cycle-label">
         {cycleLabel(cycle)}
       </span>
       <button onClick={() => canGoForward && setCycleId(cycles[index + 1].id)} disabled={!canGoForward} style={navStyle(canGoForward)} aria-label="Next cycle">
@@ -1250,8 +1259,9 @@ function EmptyRow({ colors, text }) {
 }
 
 function FinancialOverviewTab({ colors, financial, now }) {
-  const { incomes, expenses, obligations, categories, balances, setBalances, cycles, cycleId, setCycleId, debtTotals } = financial;
+  const { incomes, expenses, obligations, categories, balances, setBalances, cycles, cycleId, setCycleId, debts, debtPayments, plannedDebtPayments } = financial;
   const totals = useFinancialTotals({ incomes, expenses, obligations, categories, balances, cycles, cycleId, now });
+  const debtTotals = useDebtTotals({ debts, debtPayments, plannedDebtPayments, cycle: totals.cycle, now });
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
@@ -1282,11 +1292,11 @@ function FinancialOverviewTab({ colors, financial, now }) {
               <div style={{ fontSize: 16, fontWeight: 600, color: colors.textPrimary }}>{fmtCurrency(debtTotals.totalOutstanding)}</div>
             </div>
             <div>
-              <div style={{ fontSize: 11, color: colors.textFaint }}>Interest paid this month</div>
+              <div style={{ fontSize: 11, color: colors.textFaint }}>Interest paid this cycle</div>
               <div style={{ fontSize: 16, fontWeight: 600, color: colors.textPrimary }}>{fmtCurrency(debtTotals.interestPaidThisMonth)}</div>
             </div>
             <div>
-              <div style={{ fontSize: 11, color: colors.textFaint }}>Principal repaid this month</div>
+              <div style={{ fontSize: 11, color: colors.textFaint }}>Principal repaid this cycle</div>
               <div style={{ fontSize: 16, fontWeight: 600, color: colors.textPrimary }}>{fmtCurrency(debtTotals.principalPaidThisMonth)}</div>
             </div>
             {debtTotals.nextPlanned && (
@@ -2205,20 +2215,20 @@ function ObligationRow({ colors, o, categoryName, cycle, readOnly, onEdit, onDel
   const paidThisCycle = isObligationPaid(o, cycle);
 
   return (
-    <div style={{
+    <div className="dos-oblig" style={{
       display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap',
       padding: '12px 4px', borderBottom: `1px solid ${colors.border}`,
     }}>
-      <div style={{ minWidth: 160, flex: '1 1 200px' }}>
+      <div className="o-name" style={{ minWidth: 160, flex: '1 1 200px' }}>
         <div style={{ fontSize: 13.5, fontWeight: 600, color: colors.textPrimary }}>{o.name}</div>
         <div style={{ fontSize: 11.5, color: colors.textFaint, marginTop: 2 }}>
           {person} · {categoryName} · {o.frequency}
         </div>
       </div>
-      <div style={{ fontSize: 13.5, fontWeight: 600, color: colors.textPrimary, minWidth: 80, textAlign: 'right' }}>
+      <div className="o-amount" style={{ fontSize: 13.5, fontWeight: 600, color: colors.textPrimary, minWidth: 80, textAlign: 'right' }}>
         {fmtCurrency(o.amount)}
       </div>
-      <div style={{ minWidth: 140, textAlign: 'right' }}>
+      <div className="o-schedule" style={{ minWidth: 140, textAlign: 'right' }}>
         <div style={{ fontSize: 11.5, color: colors.textSecondary }}>
           {paymentScheduleLabel(o)}
         </div>
@@ -2226,7 +2236,7 @@ function ObligationRow({ colors, o, categoryName, cycle, readOnly, onEdit, onDel
           <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 2 }}>Inactive</div>
         )}
       </div>
-      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+      <div className="o-actions" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
         {paidThisCycle ? (
           <>
             <span style={{
@@ -2794,7 +2804,7 @@ function PlannedPaymentModal({ colors, onClose, onSave, debt, monthKey, initial 
   );
 }
 
-function DebtCard({ colors, debt, debtPayments, plannedDebtPayments, monthKey, now, financial, showToast }) {
+function DebtCard({ colors, debt, debtPayments, plannedDebtPayments, monthKey, cycle, readOnly, now, financial, showToast }) {
   const [expanded, setExpanded] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [editingDebt, setEditingDebt] = useState(false);
@@ -2802,13 +2812,17 @@ function DebtCard({ colors, debt, debtPayments, plannedDebtPayments, monthKey, n
   const [recordModal, setRecordModal] = useState(null); // { initial?, plannedId? } | null
   const [planModal, setPlanModal] = useState(null); // { initial? } | null
 
-  const { setDebts, setDebtPayments, setPlannedDebtPayments, setExpenses, setBalances, categories, setCategories } = financial;
+  const { setDebts, setDebtPayments, setPlannedDebtPayments, expenses, setExpenses, setBalances, categories, setCategories } = financial;
 
   const person = USERS.find((u) => u.id === debt.personId)?.name || debt.personId;
   const outstanding = debtOutstandingBalance(debt, debtPayments);
   const isPaidOff = outstanding <= 0;
   const percentPaid = debt.originalAmount > 0 ? ((debt.originalAmount - outstanding) / debt.originalAmount) * 100 : 0;
   const currentPeriod = currentInterestPeriod(debt.interestSchedule, monthKey);
+
+  const paidThisCycle = debtPaymentsForDebt(debt.id, debtPayments)
+    .filter((p) => inCycle(p.paymentDate, cycle))
+    .reduce((sum, p) => sum + Number(p.totalAmount || 0), 0);
 
   const payments = debtPaymentsForDebt(debt.id, debtPayments).sort((a, b) => (a.paymentDate < b.paymentDate ? -1 : 1));
   let running = Number(debt.startingBalance ?? debt.originalAmount ?? 0);
@@ -2851,28 +2865,31 @@ function DebtCard({ colors, debt, debtPayments, plannedDebtPayments, monthKey, n
     showToast(`${debt.name} marked as paid — recorded as an expense`);
   }
 
-  function applyPaymentEffects(payment, sign) {
-    // sign = +1 to apply, -1 to reverse
-    if (Number(payment.principalAmount) > 0) {
+  // The principal part of a payment is recorded as a Debt Repayment expense
+  // (id `<paymentId>-principal`), dated on the payment, so it lands in the right
+  // pay cycle and never rewrites the starting balance (which would change every
+  // past cycle). Payments saved before this change have no such expense and
+  // instead bumped the starting balance; reversing those keeps the old math.
+  function principalExpenseId(payment) { return `${payment.id}-principal`; }
+  function hasLegacyBalanceEffect(payment) {
+    return Number(payment.principalAmount) > 0
+      && payment.notes !== 'Full payoff'
+      && !expenses.some((e) => e.id === principalExpenseId(payment));
+  }
+  function reversePaymentEffects(payment) {
+    if (hasLegacyBalanceEffect(payment)) {
       const key = payment.paymentMethod === 'Cash' ? 'cash' : 'bank';
-      setBalances((prev) => ({
-        ...prev,
-        [key]: Number(prev[key] || 0) + sign * Number(payment.principalAmount),
-      }));
+      setBalances((prev) => ({ ...prev, [key]: Number(prev[key] || 0) - Number(payment.principalAmount) }));
     }
+    const ids = [payment.expenseId, principalExpenseId(payment)].filter(Boolean);
+    setExpenses((prev) => prev.filter((e) => !ids.includes(e.id)));
   }
 
   function handleRecordSave(payment) {
     const isEdit = !!recordModal?.initial;
-    let expenseId = payment.expenseId;
+    let expenseId = null;
 
-    if (isEdit) {
-      // reverse the old payment's effects first
-      const old = recordModal.initial;
-      applyPaymentEffects(old, -1);
-      if (old.expenseId) setExpenses((prev) => prev.filter((e) => e.id !== old.expenseId));
-      expenseId = null;
-    }
+    if (isEdit) reversePaymentEffects(recordModal.initial);
 
     if (payment.interestAmount > 0) {
       expenseId = genId();
@@ -2881,11 +2898,15 @@ function DebtCard({ colors, debt, debtPayments, plannedDebtPayments, monthKey, n
         amount: payment.interestAmount, date: payment.paymentDate, paymentMethod: payment.paymentMethod,
         notes: `Interest — ${debt.name}`,
       }]);
-    } else {
-      expenseId = null;
     }
-
-    applyPaymentEffects(payment, 1);
+    if (payment.principalAmount > 0) {
+      const categoryId = getOrCreateDebtRepaymentCategoryId();
+      setExpenses((prev) => [...prev, {
+        id: principalExpenseId(payment), personId: debt.personId, categoryId,
+        amount: payment.principalAmount, date: payment.paymentDate, paymentMethod: payment.paymentMethod,
+        notes: `Principal — ${debt.name}`,
+      }]);
+    }
 
     setDebtPayments((prev) => {
       const exists = prev.some((p) => p.id === payment.id);
@@ -2902,8 +2923,7 @@ function DebtCard({ colors, debt, debtPayments, plannedDebtPayments, monthKey, n
   }
 
   function handleDeletePayment(payment) {
-    applyPaymentEffects(payment, -1);
-    if (payment.expenseId) setExpenses((prev) => prev.filter((e) => e.id !== payment.expenseId));
+    reversePaymentEffects(payment);
     setDebtPayments((prev) => prev.filter((p) => p.id !== payment.id));
     showToast('Payment deleted');
   }
@@ -2944,17 +2964,23 @@ function DebtCard({ colors, debt, debtPayments, plannedDebtPayments, monthKey, n
       </div>
       <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 4 }}>{percentPaid.toFixed(1)}% repaid</div>
 
-      <div style={{ display: 'flex', gap: 16, marginTop: 12 }}>
+      <div style={{ display: 'flex', gap: 20, marginTop: 12, flexWrap: 'wrap' }}>
         <div>
-          <div style={{ fontSize: 11, color: colors.textFaint }}>Current monthly interest</div>
+          <div style={{ fontSize: 11, color: colors.textFaint }}>Interest per cycle</div>
           <div style={{ fontSize: 13.5, fontWeight: 600, color: colors.textPrimary }}>
             {currentPeriod ? fmtCurrency(currentPeriod.monthlyInterestAmount) : '—'}
           </div>
         </div>
+        <div>
+          <div style={{ fontSize: 11, color: colors.textFaint }}>Paid this cycle</div>
+          <div style={{ fontSize: 13.5, fontWeight: 600, color: colors.textPrimary }}>{fmtCurrency(paidThisCycle)}</div>
+        </div>
       </div>
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 14 }}>
-      {debt.debtType === 'Long-term' ? (
+      {readOnly ? (
+        <span style={{ fontSize: 11.5, color: colors.textFaint }}>Past cycle (view only)</span>
+      ) : debt.debtType === 'Long-term' ? (
         <>
           <button
             onClick={() => setRecordModal({})}
@@ -3079,7 +3105,8 @@ function DebtCard({ colors, debt, debtPayments, plannedDebtPayments, monthKey, n
           <>
             <button
               onClick={() => {
-                const linkedExpenseIds = debtPaymentsForDebt(debt.id, debtPayments).map((p) => p.expenseId).filter(Boolean);
+                const debtPaymentList = debtPaymentsForDebt(debt.id, debtPayments);
+                const linkedExpenseIds = debtPaymentList.flatMap((p) => [p.expenseId, principalExpenseId(p)]).filter(Boolean);
                 if (linkedExpenseIds.length > 0) setExpenses((prev) => prev.filter((e) => !linkedExpenseIds.includes(e.id)));
                 setDebtPayments((prev) => prev.filter((p) => p.debtId !== debt.id));
                 setPlannedDebtPayments((prev) => prev.filter((p) => p.debtId !== debt.id));
@@ -3129,7 +3156,7 @@ function DebtCard({ colors, debt, debtPayments, plannedDebtPayments, monthKey, n
 }
 
 function FinancialDebtTab({ colors, financial, now }) {
-  const { debts, setDebts, debtPayments, plannedDebtPayments, monthKey, categories } = financial;
+  const { debts, setDebts, debtPayments, plannedDebtPayments, categories, cycles, cycleId, setCycleId } = financial;
   const [modalOpen, setModalOpen] = useState(false);
   const [toast, setToast] = useState('');
   const [showPaidOff, setShowPaidOff] = useState(false);
@@ -3139,7 +3166,10 @@ function FinancialDebtTab({ colors, financial, now }) {
     setTimeout(() => setToast(''), 2200);
   }
 
-  const debtTotals = useDebtTotals({ debts, debtPayments, plannedDebtPayments, monthKey });
+  const cycle = cycles.find((c) => c.id === cycleId) || cycles[cycles.length - 1];
+  const readOnly = !cycle.isCurrent;
+  const monthKey = cycleInterestMonthKey(cycle, now);
+  const debtTotals = useDebtTotals({ debts, debtPayments, plannedDebtPayments, cycle, now });
   const hasInterestCategory = categories.some((c) => c.name === 'Interest');
   const activeDebts = debts.filter((d) => (d.status || 'Active') !== 'Paid Off');
   const paidOffDebts = debts.filter((d) => d.status === 'Paid Off');
@@ -3153,7 +3183,7 @@ function FinancialDebtTab({ colors, financial, now }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-        <span style={{ fontSize: 13, color: colors.textSecondary }}>Debt & loan tracking</span>
+        <CyclePicker colors={colors} cycles={cycles} cycleId={cycle.id} setCycleId={setCycleId} />
         <button
           onClick={() => setModalOpen(true)}
           style={{
@@ -3171,13 +3201,13 @@ function FinancialDebtTab({ colors, financial, now }) {
 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
         <SummaryCard colors={colors} icon={CreditCard} label="Total debt remaining" value={fmtCurrency(debtTotals.totalOutstanding)} tone="urgent" />
-        <SummaryCard colors={colors} icon={TrendingUp} label="Monthly interest" value={fmtCurrency(debtTotals.monthlyInterestDue)} tone="upcoming" />
-        <SummaryCard colors={colors} icon={TrendingDown} label="Principal paid this month" value={fmtCurrency(debtTotals.principalPaidThisMonth)} tone="safe" />
-        <SummaryCard colors={colors} icon={Scale} label="Total debt payment this month" value={fmtCurrency(debtTotals.totalPaidThisMonth)} tone="accent" sub="Interest + principal paid" />
+        <SummaryCard colors={colors} icon={TrendingUp} label="Interest due this cycle" value={fmtCurrency(debtTotals.monthlyInterestDue)} tone="upcoming" />
+        <SummaryCard colors={colors} icon={TrendingDown} label="Principal paid this cycle" value={fmtCurrency(debtTotals.principalPaidThisMonth)} tone="safe" />
+        <SummaryCard colors={colors} icon={Scale} label="Total debt payment this cycle" value={fmtCurrency(debtTotals.totalPaidThisMonth)} tone="accent" sub="Interest + principal paid" />
       </div>
 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-        <SummaryCard colors={colors} icon={CreditCard} label="To pay off this month" value={fmtCurrency(debtTotals.shortTermOutstanding)} tone="urgent" sub="Short-term loans" />
+        <SummaryCard colors={colors} icon={CreditCard} label="To pay off" value={fmtCurrency(debtTotals.shortTermOutstanding)} tone="urgent" sub="Short-term loans" />
         <SummaryCard colors={colors} icon={CreditCard} label="Ongoing (interest-only)" value={fmtCurrency(debtTotals.longTermOutstanding)} tone="upcoming" sub="Long-term loans" />
       </div>
 
@@ -3210,7 +3240,7 @@ function FinancialDebtTab({ colors, financial, now }) {
               {activeDebts.map((debt) => (
                 <DebtCard
                   key={debt.id} colors={colors} debt={debt} debtPayments={debtPayments}
-                  plannedDebtPayments={plannedDebtPayments} monthKey={monthKey} now={now}
+                  plannedDebtPayments={plannedDebtPayments} monthKey={monthKey} cycle={cycle} readOnly={readOnly} now={now}
                   financial={financial} showToast={showToast}
                 />
               ))}
@@ -3232,7 +3262,7 @@ function FinancialDebtTab({ colors, financial, now }) {
                   {paidOffDebts.map((debt) => (
                     <DebtCard
                       key={debt.id} colors={colors} debt={debt} debtPayments={debtPayments}
-                      plannedDebtPayments={plannedDebtPayments} monthKey={monthKey} now={now}
+                      plannedDebtPayments={plannedDebtPayments} monthKey={monthKey} cycle={cycle} readOnly={readOnly} now={now}
                       financial={financial} showToast={showToast}
                     />
                   ))}
@@ -4335,9 +4365,9 @@ function DashboardPage({ colors, now, financial, immigration, setPage }) {
         </div>
         {debtTotals.totalOriginal > 0 && (
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 12 }}>
-            <SummaryCard colors={colors} icon={CreditCard} label="To pay off this month" value={fmtCurrency(debtTotals.shortTermOutstanding)} tone="urgent" sub="Short-term loans" />
+            <SummaryCard colors={colors} icon={CreditCard} label="To pay off" value={fmtCurrency(debtTotals.shortTermOutstanding)} tone="urgent" sub="Short-term loans" />
             <SummaryCard colors={colors} icon={CreditCard} label="Total debt" value={fmtCurrency(debtTotals.totalOutstanding)} tone="upcoming" sub={`${debtTotals.percentPaid.toFixed(1)}% paid off`} />
-            <SummaryCard colors={colors} icon={TrendingUp} label="Interest due this month" value={fmtCurrency(debtTotals.monthlyInterestDue)} tone="upcoming" />
+            <SummaryCard colors={colors} icon={TrendingUp} label="Interest due this cycle" value={fmtCurrency(debtTotals.monthlyInterestDue)} tone="upcoming" />
             {debtTotals.nextPlanned && (
               <SummaryCard
                 colors={colors} icon={CalendarClock} label="Next principal payment"
@@ -4874,7 +4904,7 @@ function DailyOSApp() {
 
   // Always the CURRENT cycle: used by the Dashboard and suggestions.
   const totals = useFinancialTotals({ incomes, expenses, obligations, balances, categories, cycles, cycleId: currentCycleId, now });
-  const debtTotals = useDebtTotals({ debts, debtPayments, plannedDebtPayments, monthKey });
+  const debtTotals = useDebtTotals({ debts, debtPayments, plannedDebtPayments, cycle: cycles[cycles.length - 1], now });
   const financial = {
     incomes, setIncomes, expenses, setExpenses, obligations, setObligations,
     categories, setCategories, balances, setBalances, monthKey, setMonthKey, cycles, cycleId, setCycleId, totals,
@@ -4928,6 +4958,9 @@ function DailyOSApp() {
         .dos-row-income { grid-template-columns: 90px 80px 1fr 100px 1fr auto; }
         .dos-row-expense { grid-template-columns: 90px 80px 1fr 100px 90px 1fr auto; }
         .dos-tabs button { white-space: nowrap; }
+        @media (pointer: coarse) {
+          .dailyos-shell button[aria-label^="Edit"], .dailyos-shell button[aria-label^="Delete"] { padding: 9px !important; }
+        }
         button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid ${colors.accent}; outline-offset: 1px; }
         @media (max-width: 760px) {
           .dos-page { padding-left: 14px !important; padding-right: 14px !important; }
@@ -4944,6 +4977,16 @@ function DailyOSApp() {
           .dos-row .c-notes { grid-area: notes; }
           .dos-row .c-actions { grid-area: actions; }
           .dos-row .c-actions button { padding: 8px !important; }
+          .dos-card { flex: 1 1 calc(50% - 6px) !important; min-width: 0 !important; padding: 13px 14px !important; }
+          .dos-card > div:nth-child(3) { font-size: 18px !important; }
+          .dos-cycle { width: 100%; justify-content: space-between; }
+          .dos-cycle-label { flex: 1; min-width: 0 !important; }
+          .dos-oblig { display: grid !important; grid-template-columns: 1fr auto; grid-template-areas: "name amount" "schedule schedule" "actions actions"; gap: 6px 10px !important; }
+          .dos-oblig .o-name { grid-area: name; min-width: 0 !important; }
+          .dos-oblig .o-amount { grid-area: amount; min-width: 0 !important; }
+          .dos-oblig .o-schedule { grid-area: schedule; text-align: left !important; min-width: 0 !important; }
+          .dos-oblig .o-actions { grid-area: actions; justify-content: space-between; flex-wrap: wrap; }
+          .dos-oblig .o-actions button { min-height: 34px; }
           .dailyos-shell input, .dailyos-shell select, .dailyos-shell textarea { font-size: 16px !important; }
           .dos-modal-backdrop { align-items: flex-end !important; padding: 0 !important; }
           .dos-modal-backdrop > div { max-width: none !important; border-bottom-left-radius: 0 !important; border-bottom-right-radius: 0 !important; max-height: 92dvh !important; }
