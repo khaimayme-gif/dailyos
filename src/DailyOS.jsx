@@ -545,7 +545,7 @@ function daysBetween(aStr, bStr) {
  * runs until the day before the next one; the latest stays open ("current").
  * Nothing resets on the 1st of a month.
  */
-function deriveCycles(incomes) {
+function deriveCycles(incomes, expenses = []) {
   const salaryDates = [...new Set(
     incomes.filter((i) => i.type === 'Salary').map((i) => i.date).filter(Boolean)
   )].sort();
@@ -554,10 +554,14 @@ function deriveCycles(incomes) {
     // No salary recorded yet: one open cycle so everything still works.
     return [{ id: 'all', start: null, end: null, isCurrent: true }];
   }
-  return salaryDates.map((start, i) => {
+  // Records dated before the first salary belong to the first cycle so they
+  // stay visible instead of falling outside every cycle.
+  const earliest = [...incomes, ...expenses].map((r) => r.date).filter(Boolean).sort()[0];
+  return salaryDates.map((salaryDate, i) => {
     const next = salaryDates[i + 1];
     const end = next ? addDays(next, -1) : null;
-    return { id: start, start, end, isCurrent: end === null };
+    const start = i === 0 && earliest && earliest < salaryDate ? earliest : salaryDate;
+    return { id: salaryDate, start, end, isCurrent: end === null };
   });
 }
 function inCycle(dateStr, cycle) {
@@ -588,11 +592,27 @@ function runningBalanceAsOf(asOfDateStr, incomes, expenses, balances) {
     - sum(expenseTo.filter((r) => r.paymentMethod !== 'Cash'));
   return { cashBalance, bankBalance, totalAvailable: cashBalance + bankBalance };
 }
-/** Cycle-aware version of obligationAppliesToMonth. */
+/** Whether a commitment belongs in a pay cycle. Recurring commitments show
+ * up exactly once per cycle (once their first due date has been reached);
+ * yearly ones only in the cycle that contains their anniversary. */
 function obligationAppliesToCycle(o, cycle) {
   if (o.frequency === 'One-time') return inCycle(o.dueDate, cycle);
   if (!cycle.start) return true;
-  return o.dueDate <= (cycle.end || '9999-12-31');
+  if (o.dueDate > (cycle.end || '9999-12-31')) return false;
+  if (o.frequency === 'Yearly') {
+    // Open cycles have no end yet; look ~45 days ahead for the anniversary.
+    const windowEnd = cycle.end || addDays(cycle.start, 45);
+    const md = o.dueDate.slice(5);
+    const startYear = Number(cycle.start.slice(0, 4));
+    return [startYear, startYear + 1].some((y) => {
+      const d = `${y}-${md}`;
+      return d >= o.dueDate && d >= cycle.start && d <= windowEnd;
+    });
+  }
+  return true;
+}
+function isObligationPaid(o, cycle) {
+  return (o.paidMonths || []).includes(cycle.id);
 }
 function lastDayOfMonth(y, m) {
   return new Date(y, m, 0).getDate(); // m is 1-12, day 0 of next month = last day of this month
@@ -724,7 +744,7 @@ function dueDateForMonth(o, monthKey) {
 }
 function paymentScheduleLabel(o) {
   const [, m, d] = o.dueDate.split('-').map(Number);
-  if (o.frequency === 'Monthly' || o.frequency === 'Weekly') return `Day ${d} of each month`;
+  if (o.frequency === 'Monthly' || o.frequency === 'Weekly') return `Once every pay cycle (around day ${d})`;
   if (o.frequency === 'Yearly') {
     const monthName = new Date(2000, m - 1, 1).toLocaleDateString('en-US', { month: 'long' });
     return `${monthName} ${d} every year`;
@@ -760,36 +780,36 @@ function todayStr(now) {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 }
 
-/** Manually records this month's payment for a commitment: creates the
- * linked expense (dated today, since that's when the payment actually
- * happened) and marks the current month paid on the commitment itself. */
-function recordObligationPayment(o, now, setExpenses, setObligations) {
-  const currentMonthKey = monthKeyOf(now);
-  const expenseId = genId();
-  setExpenses((prev) => [...prev, {
+/** Manually records a commitment's payment for the current pay cycle:
+ * creates the linked expense (dated today, since that's when the payment
+ * actually happened) and marks the cycle paid on the commitment itself.
+ * A commitment can only be paid once per cycle; the expense id is derived
+ * from commitment + cycle so a double click can never create a second one. */
+function recordObligationPayment(o, cycle, now, setExpenses, setObligations) {
+  if (isObligationPaid(o, cycle)) return;
+  const expenseId = `ob-${o.id}-${cycle.id}`;
+  setExpenses((prev) => (prev.some((e) => e.id === expenseId) ? prev : [...prev, {
     id: expenseId, personId: o.personId, categoryId: o.categoryId,
     amount: o.amount, date: todayStr(now), paymentMethod: 'Bank',
     notes: `Recorded from commitment: ${o.name}`,
-  }]);
-  setObligations((prev) => prev.map((item) => (item.id === o.id ? {
+  }]));
+  setObligations((prev) => prev.map((item) => (item.id === o.id && !isObligationPaid(item, cycle) ? {
     ...item,
-    paidMonths: [...(item.paidMonths || []), currentMonthKey],
-    linkedExpenses: [...(item.linkedExpenses || []), { monthKey: currentMonthKey, expenseId }],
+    paidMonths: [...(item.paidMonths || []), cycle.id],
+    linkedExpenses: [...(item.linkedExpenses || []), { cycleId: cycle.id, expenseId }],
   } : item)));
 }
 
-/** Reverses recordObligationPayment: removes the linked expense (if it
- * still exists) and un-marks the current month as paid. */
-function undoObligationPayment(o, now, setExpenses, setObligations) {
-  const currentMonthKey = monthKeyOf(now);
-  const link = (o.linkedExpenses || []).find((l) => l.monthKey === currentMonthKey);
+/** Reverses recordObligationPayment for the given cycle. */
+function undoObligationPayment(o, cycle, setExpenses, setObligations) {
+  const link = (o.linkedExpenses || []).find((l) => l.cycleId === cycle.id);
   if (link) {
     setExpenses((prev) => prev.filter((e) => e.id !== link.expenseId));
   }
   setObligations((prev) => prev.map((item) => (item.id === o.id ? {
     ...item,
-    paidMonths: (item.paidMonths || []).filter((m) => m !== currentMonthKey),
-    linkedExpenses: (item.linkedExpenses || []).filter((l) => l.monthKey !== currentMonthKey),
+    paidMonths: (item.paidMonths || []).filter((m) => m !== cycle.id),
+    linkedExpenses: (item.linkedExpenses || []).filter((l) => l.cycleId !== cycle.id),
   } : item)));
 }
 
@@ -1039,7 +1059,7 @@ function CyclePicker({ colors, cycles, cycleId, setCycleId }) {
       <button onClick={() => canGoBack && setCycleId(cycles[index - 1].id)} disabled={!canGoBack} style={navStyle(canGoBack)} aria-label="Previous cycle">
         <ChevronLeft size={15} />
       </button>
-      <span style={{ fontSize: 14, fontWeight: 600, color: colors.textPrimary, minWidth: 130, textAlign: 'center' }}>
+      <span style={{ fontSize: 14, fontWeight: 600, color: colors.textPrimary, minWidth: 120, textAlign: 'center' }}>
         {cycleLabel(cycle)}
       </span>
       <button onClick={() => canGoForward && setCycleId(cycles[index + 1].id)} disabled={!canGoForward} style={navStyle(canGoForward)} aria-label="Next cycle">
@@ -1344,7 +1364,7 @@ function fieldInputStyle(colors, hasError) {
 function Modal({ colors, onClose, title, children }) {
   return (
     <div
-      onClick={onClose}
+      onClick={onClose} className="dos-modal-backdrop"
       style={{
         position: 'fixed', inset: 0, background: 'rgba(20,22,20,0.4)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -1355,7 +1375,7 @@ function Modal({ colors, onClose, title, children }) {
         onClick={(e) => e.stopPropagation()}
         style={{
           background: colors.surface, borderRadius: 16, border: `1px solid ${colors.border}`,
-          boxShadow: colors.shadow, width: '100%', maxWidth: 420, maxHeight: '85vh',
+          boxShadow: colors.shadow, width: '100%', maxWidth: 420, maxHeight: '88vh',
           overflowY: 'auto', padding: '22px 22px 20px', fontFamily: 'Inter, sans-serif',
         }}
       >
@@ -1382,7 +1402,7 @@ function Toast({ colors, text }) {
       position: 'fixed', bottom: 20, left: '50%', transform: 'translateX(-50%)',
       background: colors.textPrimary, color: colors.bg, padding: '10px 18px',
       borderRadius: 999, fontSize: 13, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 8,
-      zIndex: 200, fontFamily: 'Inter, sans-serif',
+      zIndex: 200, fontFamily: 'Inter, sans-serif', maxWidth: 'calc(100vw - 32px)',
     }}>
       <Check size={14} />
       {text}
@@ -1495,24 +1515,23 @@ function IncomeRow({ colors, record, onEdit, onDelete }) {
   const person = USERS.find((u) => u.id === record.personId)?.name || record.personId;
 
   return (
-    <div style={{
-      display: 'grid', gridTemplateColumns: '90px 80px 1fr 100px 1fr auto', gap: 10, alignItems: 'center',
+    <div className="dos-row dos-row-income" style={{
       padding: '10px 4px', borderBottom: `1px solid ${colors.border}`, fontSize: 13,
     }}>
-      <span style={{ color: colors.textSecondary }}>{record.date}</span>
-      <span style={{ color: colors.textPrimary, fontWeight: 500 }}>{person}</span>
-      <span style={{ color: colors.textSecondary }}>{record.type}</span>
-      <span style={{ color: colors.textPrimary, fontWeight: 600, textAlign: 'right' }}>{fmtCurrency(record.amount)}</span>
-      <span style={{ color: colors.textFaint, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <span className="c-date" style={{ color: colors.textSecondary }}>{record.date}</span>
+      <span className="c-person" style={{ color: colors.textPrimary, fontWeight: 500 }}>{person}</span>
+      <span className="c-type" style={{ color: colors.textSecondary }}>{record.type}</span>
+      <span className="c-amount" style={{ color: colors.textPrimary, fontWeight: 600, textAlign: 'right' }}>{fmtCurrency(record.amount)}</span>
+      <span className="c-notes" style={{ color: colors.textFaint, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {record.notes || '—'}
       </span>
       {confirming ? (
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div className="c-actions" style={{ display: 'flex', gap: 6 }}>
           <button onClick={() => onDelete(record.id)} style={{ fontSize: 11.5, color: colors.urgent, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}>Delete</button>
           <button onClick={() => setConfirming(false)} style={{ fontSize: 11.5, color: colors.textFaint, background: 'none', border: 'none', cursor: 'pointer' }}>Cancel</button>
         </div>
       ) : (
-        <div style={{ display: 'flex', gap: 4 }}>
+        <div className="c-actions" style={{ display: 'flex', gap: 4 }}>
           <button onClick={() => onEdit(record)} aria-label="Edit" style={{ border: 'none', background: 'none', color: colors.textFaint, cursor: 'pointer', padding: 4 }}><Pencil size={13} /></button>
           <button onClick={() => setConfirming(true)} aria-label="Delete" style={{ border: 'none', background: 'none', color: colors.textFaint, cursor: 'pointer', padding: 4 }}><Trash2 size={13} /></button>
         </div>
@@ -1644,7 +1663,7 @@ function FinancialIncomeTab({ colors, financial, now }) {
   );
 }
 
-function ExpenseModal({ colors, onClose, onSave, initial, categories, obligations = [] }) {
+function ExpenseModal({ colors, onClose, onSave, initial, categories, obligations = [], currentCycle }) {
   const activeCats = categories.filter((c) => c.active);
   const { personId: currentPersonId } = useCurrentUser();
   const personId = initial?.personId || currentPersonId;
@@ -1708,9 +1727,14 @@ function ExpenseModal({ colors, onClose, onSave, initial, categories, obligation
             placeholder="0" style={fieldInputStyle(colors, errors.amount)}
           />
           {errors.amount && <div style={{ fontSize: 11.5, color: colors.urgent, marginTop: 4 }}>{errors.amount}</div>}
+          {!initial && matchedObligation && currentCycle && isObligationPaid(matchedObligation, currentCycle) && (
+            <div style={{ fontSize: 11.5, color: colors.upcoming, background: colors.upcomingSoft, borderRadius: 8, padding: '8px 10px', marginTop: 8 }}>
+              "{matchedObligation.name}" is already marked paid this cycle. Adding this will record it a second time.
+            </div>
+          )}
           {amountSource === 'obligation' && matchedObligation && (
             <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 4 }}>
-              Auto-filled from your "{matchedObligation.name}" commitment — edit if this month is different.
+              Auto-filled from your "{matchedObligation.name}" commitment — edit if this cycle is different.
             </div>
           )}
         </div>
@@ -1763,27 +1787,26 @@ function ExpenseRow({ colors, record, categoryName, onEdit, onDelete }) {
   const PayIcon = record.paymentMethod === 'Cash' ? Banknote : Landmark;
 
   return (
-    <div style={{
-      display: 'grid', gridTemplateColumns: '90px 80px 1fr 100px 90px 1fr auto', gap: 10, alignItems: 'center',
+    <div className="dos-row dos-row-expense" style={{
       padding: '10px 4px', borderBottom: `1px solid ${colors.border}`, fontSize: 13,
     }}>
-      <span style={{ color: colors.textSecondary }}>{record.date}</span>
-      <span style={{ color: colors.textPrimary, fontWeight: 500 }}>{person}</span>
-      <span style={{ color: colors.textSecondary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{categoryName}</span>
-      <span style={{ color: colors.textPrimary, fontWeight: 600, textAlign: 'right' }}>{fmtCurrency(record.amount)}</span>
-      <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: colors.textFaint, fontSize: 12 }}>
+      <span className="c-date" style={{ color: colors.textSecondary }}>{record.date}</span>
+      <span className="c-person" style={{ color: colors.textPrimary, fontWeight: 500 }}>{person}</span>
+      <span className="c-type" style={{ color: colors.textSecondary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{categoryName}</span>
+      <span className="c-amount" style={{ color: colors.textPrimary, fontWeight: 600, textAlign: 'right' }}>{fmtCurrency(record.amount)}</span>
+      <span className="c-pay" style={{ display: 'flex', alignItems: 'center', gap: 4, color: colors.textFaint, fontSize: 12 }}>
         <PayIcon size={12} /> {record.paymentMethod}
       </span>
-      <span style={{ color: colors.textFaint, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <span className="c-notes" style={{ color: colors.textFaint, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {record.notes || '—'}
       </span>
       {confirming ? (
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div className="c-actions" style={{ display: 'flex', gap: 6 }}>
           <button onClick={() => onDelete(record.id)} style={{ fontSize: 11.5, color: colors.urgent, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}>Delete</button>
           <button onClick={() => setConfirming(false)} style={{ fontSize: 11.5, color: colors.textFaint, background: 'none', border: 'none', cursor: 'pointer' }}>Cancel</button>
         </div>
       ) : (
-        <div style={{ display: 'flex', gap: 4 }}>
+        <div className="c-actions" style={{ display: 'flex', gap: 4 }}>
           <button onClick={() => onEdit(record)} aria-label="Edit" style={{ border: 'none', background: 'none', color: colors.textFaint, cursor: 'pointer', padding: 4 }}><Pencil size={13} /></button>
           <button onClick={() => setConfirming(true)} aria-label="Delete" style={{ border: 'none', background: 'none', color: colors.textFaint, cursor: 'pointer', padding: 4 }}><Trash2 size={13} /></button>
         </div>
@@ -2033,7 +2056,7 @@ function FinancialExpensesTab({ colors, financial, now }) {
 
       {modalOpen && (
         <ExpenseModal
-          colors={colors} initial={editRecord} categories={categories} obligations={obligations}
+          colors={colors} initial={editRecord} categories={categories} obligations={obligations} currentCycle={cycles[cycles.length - 1]}
           onClose={() => { setModalOpen(false); setEditRecord(null); }}
           onSave={handleSave}
         />
@@ -2176,11 +2199,10 @@ function StatusBadge({ colors, tone, label }) {
   );
 }
 
-function ObligationRow({ colors, o, categoryName, now, onEdit, onDelete, onMarkPaid, onUndoPaid }) {
+function ObligationRow({ colors, o, categoryName, cycle, readOnly, onEdit, onDelete, onMarkPaid, onUndoPaid }) {
   const [confirming, setConfirming] = useState(false);
   const person = USERS.find((u) => u.id === o.personId)?.name || o.personId;
-  const currentMonthKey = monthKeyOf(now);
-  const paidThisMonth = (o.paidMonths || []).includes(currentMonthKey);
+  const paidThisCycle = isObligationPaid(o, cycle);
 
   return (
     <div style={{
@@ -2205,14 +2227,19 @@ function ObligationRow({ colors, o, categoryName, now, onEdit, onDelete, onMarkP
         )}
       </div>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-        {paidThisMonth ? (
+        {paidThisCycle ? (
           <>
             <span style={{
               fontSize: 11.5, fontWeight: 600, color: colors.safe, background: colors.safeSoft,
               borderRadius: 999, padding: '4px 10px', display: 'flex', alignItems: 'center', gap: 4,
             }}><Check size={11} /> Paid</span>
-            <button onClick={() => onUndoPaid(o)} style={{ fontSize: 11, color: colors.textFaint, background: 'none', border: 'none', cursor: 'pointer' }}>Undo</button>
+            {!readOnly && <button onClick={() => onUndoPaid(o)} style={{ fontSize: 11, color: colors.textFaint, background: 'none', border: 'none', cursor: 'pointer' }}>Undo</button>}
           </>
+        ) : readOnly ? (
+          <span style={{
+            fontSize: 11.5, fontWeight: 600, color: colors.urgent, background: colors.urgentSoft,
+            borderRadius: 999, padding: '4px 10px',
+          }}>Not paid</span>
         ) : (
           <button
             onClick={() => onMarkPaid(o)}
@@ -2222,7 +2249,7 @@ function ObligationRow({ colors, o, categoryName, now, onEdit, onDelete, onMarkP
             }}
           >Paid</button>
         )}
-        {confirming ? (
+        {readOnly ? null : confirming ? (
           <>
             <button onClick={() => onDelete(o.id)} style={{ fontSize: 11.5, color: colors.urgent, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}>Delete</button>
             <button onClick={() => setConfirming(false)} style={{ fontSize: 11.5, color: colors.textFaint, background: 'none', border: 'none', cursor: 'pointer' }}>Cancel</button>
@@ -2239,7 +2266,10 @@ function ObligationRow({ colors, o, categoryName, now, onEdit, onDelete, onMarkP
 }
 
 function FinancialObligationsTab({ colors, financial, now }) {
-  const { obligations, setObligations, expenses, setExpenses, categories, totals } = financial;
+  const { obligations, setObligations, expenses, setExpenses, categories, balances, cycles, cycleId, setCycleId } = financial;
+  const totals = useFinancialTotals({ incomes: financial.incomes, expenses, obligations, categories, balances, cycles, cycleId, now });
+  const cycle = totals.cycle;
+  const readOnly = !totals.isCurrentCycle;
   const [modalOpen, setModalOpen] = useState(false);
   const [editRecord, setEditRecord] = useState(null);
   const [toast, setToast] = useState('');
@@ -2266,11 +2296,11 @@ function FinancialObligationsTab({ colors, financial, now }) {
     showToast('Commitment deleted');
   }
   function handleMarkPaid(o) {
-    recordObligationPayment(o, now, setExpenses, setObligations);
+    recordObligationPayment(o, cycle, now, setExpenses, setObligations);
     showToast(`${o.name} marked paid — added to Expenses`);
   }
   function handleUndoPaid(o) {
-    undoObligationPayment(o, now, setExpenses, setObligations);
+    undoObligationPayment(o, cycle, setExpenses, setObligations);
     showToast(`${o.name} unmarked`);
   }
   function categoryName(id) {
@@ -2278,16 +2308,13 @@ function FinancialObligationsTab({ colors, financial, now }) {
   }
 
   const list = obligations
-    .filter((o) => o.active !== false)
+    .filter((o) => o.active !== false && obligationAppliesToCycle(o, cycle))
     .sort((a, b) => Number(a.dueDate.slice(8, 10)) - Number(b.dueDate.slice(8, 10)));
-  const totalCommitments = list.reduce((s, o) => s + Number(o.amount || 0), 0);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-        <span style={{ fontSize: 13, color: colors.textSecondary }}>
-          Recurring and one-time commitments
-        </span>
+        <CyclePicker colors={colors} cycles={cycles} cycleId={cycle.id} setCycleId={setCycleId} />
         <button
           onClick={() => { setEditRecord(null); setModalOpen(true); }}
           style={{
@@ -2300,8 +2327,9 @@ function FinancialObligationsTab({ colors, financial, now }) {
       </div>
 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-        <SummaryCard colors={colors} icon={ListChecks} label="Total commitments" value={fmtCurrency(totalCommitments)} tone="upcoming" />
-        <SummaryCard colors={colors} icon={Scale} label="Spendable money" value={fmtCurrency(totals.spendableMoney)} tone="accent" sub="Total available − unpaid this month" />
+        <SummaryCard colors={colors} icon={ListChecks} label="Commitments this cycle" value={fmtCurrency(totals.totalObligations)} tone="upcoming" sub="Each commitment counts once per cycle" />
+        <SummaryCard colors={colors} icon={CreditCard} label="Still unpaid" value={fmtCurrency(totals.unpaidObligations)} tone="urgent" />
+        <SummaryCard colors={colors} icon={Scale} label="Spendable money" value={fmtCurrency(totals.spendableMoney)} tone="accent" sub="Total available − unpaid commitments" />
       </div>
 
       <div style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '16px 18px' }}>
@@ -2310,12 +2338,12 @@ function FinancialObligationsTab({ colors, financial, now }) {
         </div>
 
         {list.length === 0 ? (
-          <EmptyRow colors={colors} text="You don't have any commitments recorded." />
+          <EmptyRow colors={colors} text="No commitments fall in this cycle." />
         ) : (
           <div>
             {list.map((o) => (
               <ObligationRow
-                key={o.id} colors={colors} o={o} now={now}
+                key={o.id} colors={colors} o={o} cycle={cycle} readOnly={readOnly}
                 categoryName={categoryName(o.categoryId)}
                 onEdit={(rec) => { setEditRecord(rec); setModalOpen(true); }}
                 onDelete={handleDelete}
@@ -3228,8 +3256,8 @@ function FinancialPage({ colors, financial, now }) {
   const [tab, setTab] = useState('overview');
 
   return (
-    <div style={{ padding: '20px 24px 40px' }}>
-      <div style={{ display: 'flex', gap: 6, marginBottom: 20, flexWrap: 'wrap' }}>
+    <div className="dos-page" style={{ padding: '20px 24px 40px' }}>
+      <div className="dos-tabs" style={{ display: 'flex', gap: 6, marginBottom: 20, flexWrap: 'wrap' }}>
         {FINANCIAL_TABS.map((t) => {
           const Icon = t.icon;
           const active = tab === t.id;
@@ -4115,7 +4143,7 @@ function ImmigrationPage({ colors, immigration, now }) {
   const { visas, setVisas, ninetyDayReports, setNinetyDayReports, passports, setPassports } = immigration;
 
   return (
-    <div style={{ padding: '20px 24px 40px' }}>
+    <div className="dos-page" style={{ padding: '20px 24px 40px' }}>
       <ImmigrationOverview colors={colors} visas={visas} ninetyDayReports={ninetyDayReports} passports={passports} now={now} />
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 20, flexWrap: 'wrap' }}>
@@ -4217,7 +4245,7 @@ function buildSuggestions({ totals, visas, ninetyDayReports, passports, debtTota
   }
 
   if (totals.spendableMoney < 0) {
-    tips.push({ tone: 'urgent', text: "You're projected to run negative this month based on current spending and obligations." });
+    tips.push({ tone: 'urgent', text: "You're projected to run negative this cycle based on current spending and obligations." });
   } else if (totals.dailyGuide > 0 && totals.dailyGuide < 300) {
     tips.push({ tone: 'upcoming', text: `Your suggested daily spending is ${fmtCurrency(totals.dailyGuide)} — tighter than usual.` });
   }
@@ -4233,7 +4261,7 @@ function buildSuggestions({ totals, visas, ninetyDayReports, passports, debtTota
   if (topCategory && totals.totalSpending > 0) {
     const share = Math.round((topCategory.amount / totals.totalSpending) * 100);
     if (share >= 40) {
-      tips.push({ tone: 'safe', text: `${topCategory.name} makes up ${share}% of this month's spending so far.` });
+      tips.push({ tone: 'safe', text: `${topCategory.name} makes up ${share}% of this cycle's spending so far.` });
     }
   }
 
@@ -4270,7 +4298,7 @@ function DashboardPage({ colors, now, financial, immigration, setPage }) {
   const nearestPassportStatus = nearestPassport ? passportStatus(nearestPassport.expirationDate, now) : null;
 
   return (
-    <div style={{ padding: '28px 24px 40px', display: 'flex', flexDirection: 'column', gap: 24 }}>
+    <div className="dos-page" style={{ padding: '28px 24px 40px', display: 'flex', flexDirection: 'column', gap: 24 }}>
       <div style={{
         background: colors.surface, border: `1px solid ${colors.border}`,
         borderRadius: 16, padding: '24px 26px',
@@ -4301,8 +4329,8 @@ function DashboardPage({ colors, now, financial, immigration, setPage }) {
         </DashboardSectionLabel>
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           <SummaryCard colors={colors} icon={Scale} label="Available to spend" value={fmtCurrency(totals.spendableMoney)} tone="accent" sub="Cash + bank − unpaid obligations" />
-          <SummaryCard colors={colors} icon={TrendingUp} label="Income this month" value={fmtCurrency(totals.totalIncome)} tone="safe" />
-          <SummaryCard colors={colors} icon={TrendingDown} label="Spent this month" value={fmtCurrency(totals.totalSpending)} tone="urgent" />
+          <SummaryCard colors={colors} icon={TrendingUp} label="Income this cycle" value={fmtCurrency(totals.totalIncome)} tone="safe" />
+          <SummaryCard colors={colors} icon={TrendingDown} label="Spent this cycle" value={fmtCurrency(totals.totalSpending)} tone="urgent" />
           <SummaryCard colors={colors} icon={Banknote} label="Daily guide" value={fmtCurrency(totals.dailyGuide)} tone="upcoming" sub={`Based on ${totals.remainingDays} days left`} />
         </div>
         {debtTotals.totalOriginal > 0 && (
@@ -4838,7 +4866,7 @@ function DailyOSApp() {
   // Pay cycles (Financial). `browsedCycleId` is what the Financial tabs are
   // looking at; null means "follow the current cycle" so it advances by
   // itself the moment you record a new Salary.
-  const cycles = useMemo(() => deriveCycles(incomes), [incomes]);
+  const cycles = useMemo(() => deriveCycles(incomes, expenses), [incomes, expenses]);
   const currentCycleId = cycles[cycles.length - 1].id;
   const [browsedCycleId, setBrowsedCycleId] = useState(null);
   const cycleId = browsedCycleId && cycles.some((c) => c.id === browsedCycleId) ? browsedCycleId : currentCycleId;
@@ -4896,6 +4924,30 @@ function DailyOSApp() {
         .dailyos-main { flex: 1; min-width: 0; }
         .mobile-menu-btn { display: none; }
         .mobile-scrim { display: none; }
+        .dos-row { display: grid; gap: 10px; align-items: center; }
+        .dos-row-income { grid-template-columns: 90px 80px 1fr 100px 1fr auto; }
+        .dos-row-expense { grid-template-columns: 90px 80px 1fr 100px 90px 1fr auto; }
+        .dos-tabs button { white-space: nowrap; }
+        button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid ${colors.accent}; outline-offset: 1px; }
+        @media (max-width: 760px) {
+          .dos-page { padding-left: 14px !important; padding-right: 14px !important; }
+          .dos-tabs { flex-wrap: nowrap !important; overflow-x: auto; margin-left: -14px; margin-right: -14px; padding: 0 14px 4px; scrollbar-width: none; }
+          .dos-tabs::-webkit-scrollbar { display: none; }
+          .dos-row-income { grid-template-columns: 1fr auto auto; grid-template-areas: "type amount actions" "date person person" "notes notes notes"; row-gap: 4px; padding: 12px 2px !important; }
+          .dos-row-expense { grid-template-columns: 1fr auto auto; grid-template-areas: "cat amount actions" "date person pay" "notes notes notes"; row-gap: 4px; padding: 12px 2px !important; }
+          .dos-row .c-type { grid-area: type; font-weight: 600; }
+          .dos-row-expense .c-type { grid-area: cat; color: inherit; }
+          .dos-row .c-date { grid-area: date; font-size: 12px; }
+          .dos-row .c-person { grid-area: person; font-size: 12px; font-weight: 400 !important; }
+          .dos-row .c-amount { grid-area: amount; }
+          .dos-row .c-pay { grid-area: pay; justify-self: end; }
+          .dos-row .c-notes { grid-area: notes; }
+          .dos-row .c-actions { grid-area: actions; }
+          .dos-row .c-actions button { padding: 8px !important; }
+          .dailyos-shell input, .dailyos-shell select, .dailyos-shell textarea { font-size: 16px !important; }
+          .dos-modal-backdrop { align-items: flex-end !important; padding: 0 !important; }
+          .dos-modal-backdrop > div { max-width: none !important; border-bottom-left-radius: 0 !important; border-bottom-right-radius: 0 !important; max-height: 92dvh !important; }
+        }
         @media (max-width: 760px) {
           .dailyos-sidebar { display: none; }
           .mobile-menu-btn { display: flex !important; }
