@@ -269,6 +269,19 @@ function WelcomeScreen({ colors, dark: isDark, onEnter }) {
   );
 }
 
+function useIsMobile(maxWidth = 760) {
+  const query = `(max-width: ${maxWidth}px)`;
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.matchMedia(query).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const onChange = () => setIsMobile(mq.matches);
+    onChange();
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, [query]);
+  return isMobile;
+}
+
 function SidebarContent({ colors, page, setPage, dark: isDark, setDark, closeMobile }) {
   const { personName, email } = useCurrentUser();
   return (
@@ -342,26 +355,28 @@ function SidebarContent({ colors, page, setPage, dark: isDark, setDark, closeMob
   );
 }
 
-function TopBar({ colors, title, onMenu, notifOpen, setNotifOpen, notifications }) {
+function TopBar({ colors, title, onMenu, isMobile, notifOpen, setNotifOpen, notifications }) {
   const unread = notifications.length;
   return (
     <div style={{
       display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-      padding: '16px 20px', borderBottom: `1px solid ${colors.border}`,
-      fontFamily: 'Inter, sans-serif', position: 'relative',
+      padding: '12px 16px', borderBottom: `1px solid ${colors.border}`,
+      fontFamily: 'Inter, sans-serif', position: 'sticky', top: 0, zIndex: 25, background: colors.bg,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <button
-          onClick={onMenu}
-          style={{
-            display: 'none', border: 'none', background: 'transparent',
-            color: colors.textPrimary, cursor: 'pointer', padding: 4,
-          }}
-          className="mobile-menu-btn"
-          aria-label="Open menu"
-        >
-          <Menu size={20} />
-        </button>
+        {isMobile && (
+          <button
+            onClick={onMenu}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', width: 40, height: 40,
+              border: `1px solid ${colors.border}`, borderRadius: 10, background: colors.surface,
+              color: colors.textPrimary, cursor: 'pointer',
+            }}
+            aria-label="Open menu"
+          >
+            <Menu size={20} />
+          </button>
+        )}
         <span style={{ fontSize: 15, fontWeight: 600, color: colors.textPrimary }}>{title}</span>
       </div>
 
@@ -1258,6 +1273,47 @@ function EmptyRow({ colors, text }) {
   );
 }
 
+function ResetFinancialData({ colors, financial }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState('');
+  const [done, setDone] = useState(false);
+  function reset() {
+    financial.setIncomes([]);
+    financial.setExpenses([]);
+    financial.setObligations([]);
+    financial.setPlannedDebtPayments([]);
+    financial.setDebtPayments([]);
+    financial.setDebts([]);
+    financial.setBalances({ cash: 0, bank: 0 });
+    setOpen(false); setText(''); setDone(true);
+  }
+  return (
+    <div style={{ border: `1px solid ${colors.border}`, borderRadius: 14, padding: '14px 18px' }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: colors.textPrimary }}>Reset financial data</div>
+      <div style={{ fontSize: 12, color: colors.textFaint, margin: '4px 0 10px' }}>
+        Permanently deletes all income, expenses, commitments, debts and debt payments, and sets cash and bank to 0. Categories are kept. This cannot be undone.
+      </div>
+      {done && <div style={{ fontSize: 12, color: colors.safe, marginBottom: 8 }}>Financial data cleared. You can start adding it again.</div>}
+      {!open ? (
+        <button onClick={() => { setOpen(true); setDone(false); }} style={{
+          fontSize: 12.5, fontWeight: 600, color: colors.urgent, background: colors.urgentSoft,
+          border: 'none', borderRadius: 9, padding: '8px 14px', cursor: 'pointer',
+        }}>Reset everything…</button>
+      ) : (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <input value={text} onChange={(e) => setText(e.target.value)} placeholder='Type RESET to confirm'
+            style={{ ...fieldInputStyle(colors, false), width: 200 }} />
+          <button disabled={text !== 'RESET'} onClick={reset} style={{
+            fontSize: 12.5, fontWeight: 600, color: '#fff', background: colors.urgent, border: 'none',
+            borderRadius: 9, padding: '9px 14px', cursor: text === 'RESET' ? 'pointer' : 'not-allowed', opacity: text === 'RESET' ? 1 : 0.5,
+          }}>Delete all</button>
+          <button onClick={() => { setOpen(false); setText(''); }} style={{ fontSize: 12.5, color: colors.textFaint, background: 'none', border: 'none', cursor: 'pointer' }}>Cancel</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FinancialOverviewTab({ colors, financial, now }) {
   const { incomes, expenses, obligations, categories, balances, setBalances, cycles, cycleId, setCycleId, debts, debtPayments, plannedDebtPayments } = financial;
   const totals = useFinancialTotals({ incomes, expenses, obligations, categories, balances, cycles, cycleId, now });
@@ -1352,6 +1408,7 @@ function FinancialOverviewTab({ colors, financial, now }) {
           )}
         </div>
       </div>
+      {totals.isCurrentCycle && <ResetFinancialData colors={colors} financial={financial} />}
     </div>
   );
 }
@@ -1522,13 +1579,18 @@ function IncomeModal({ colors, onClose, onSave, initial }) {
 
 function IncomeRow({ colors, record, onEdit, onDelete }) {
   const [confirming, setConfirming] = useState(false);
+  const [open, setOpen] = useState(false);
   const person = USERS.find((u) => u.id === record.personId)?.name || record.personId;
 
   return (
-    <div className="dos-row dos-row-income" style={{
+    <div className={`dos-row dos-row-income${open ? ' is-open' : ''}`} style={{
       padding: '10px 4px', borderBottom: `1px solid ${colors.border}`, fontSize: 13,
     }}>
       <span className="c-date" style={{ color: colors.textSecondary }}>{record.date}</span>
+<button className="c-details" onClick={() => setOpen((v) => !v)} aria-expanded={open}
+        style={{ border: 'none', background: 'none', color: colors.accent, fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: '4px 0' }}>
+        {open ? 'Hide' : 'Details'}
+      </button>
       <span className="c-person" style={{ color: colors.textPrimary, fontWeight: 500 }}>{person}</span>
       <span className="c-type" style={{ color: colors.textSecondary }}>{record.type}</span>
       <span className="c-amount" style={{ color: colors.textPrimary, fontWeight: 600, textAlign: 'right' }}>{fmtCurrency(record.amount)}</span>
@@ -1793,14 +1855,19 @@ function ExpenseModal({ colors, onClose, onSave, initial, categories, obligation
 
 function ExpenseRow({ colors, record, categoryName, onEdit, onDelete }) {
   const [confirming, setConfirming] = useState(false);
+  const [open, setOpen] = useState(false);
   const person = USERS.find((u) => u.id === record.personId)?.name || record.personId;
   const PayIcon = record.paymentMethod === 'Cash' ? Banknote : Landmark;
 
   return (
-    <div className="dos-row dos-row-expense" style={{
+    <div className={`dos-row dos-row-expense${open ? ' is-open' : ''}`} style={{
       padding: '10px 4px', borderBottom: `1px solid ${colors.border}`, fontSize: 13,
     }}>
       <span className="c-date" style={{ color: colors.textSecondary }}>{record.date}</span>
+<button className="c-details" onClick={() => setOpen((v) => !v)} aria-expanded={open}
+        style={{ border: 'none', background: 'none', color: colors.accent, fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: '4px 0' }}>
+        {open ? 'Hide' : 'Details'}
+      </button>
       <span className="c-person" style={{ color: colors.textPrimary, fontWeight: 500 }}>{person}</span>
       <span className="c-type" style={{ color: colors.textSecondary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{categoryName}</span>
       <span className="c-amount" style={{ color: colors.textPrimary, fontWeight: 600, textAlign: 'right' }}>{fmtCurrency(record.amount)}</span>
@@ -2211,17 +2278,18 @@ function StatusBadge({ colors, tone, label }) {
 
 function ObligationRow({ colors, o, categoryName, cycle, readOnly, onEdit, onDelete, onMarkPaid, onUndoPaid }) {
   const [confirming, setConfirming] = useState(false);
+  const [open, setOpen] = useState(false);
   const person = USERS.find((u) => u.id === o.personId)?.name || o.personId;
   const paidThisCycle = isObligationPaid(o, cycle);
 
   return (
-    <div className="dos-oblig" style={{
+    <div className={`dos-oblig${open ? ' is-open' : ''}`} style={{
       display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap',
       padding: '12px 4px', borderBottom: `1px solid ${colors.border}`,
     }}>
       <div className="o-name" style={{ minWidth: 160, flex: '1 1 200px' }}>
         <div style={{ fontSize: 13.5, fontWeight: 600, color: colors.textPrimary }}>{o.name}</div>
-        <div style={{ fontSize: 11.5, color: colors.textFaint, marginTop: 2 }}>
+        <div className="o-meta" style={{ fontSize: 11.5, color: colors.textFaint, marginTop: 2 }}>
           {person} · {categoryName} · {o.frequency}
         </div>
       </div>
@@ -2237,6 +2305,10 @@ function ObligationRow({ colors, o, categoryName, cycle, readOnly, onEdit, onDel
         )}
       </div>
       <div className="o-actions" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        <button className="o-details" onClick={() => setOpen((v) => !v)} aria-expanded={open}
+          style={{ border: 'none', background: 'none', color: colors.accent, fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: '4px 6px' }}>
+          {open ? 'Hide' : 'Details'}
+        </button>
         {paidThisCycle ? (
           <>
             <span style={{
@@ -4880,6 +4952,7 @@ function DailyOSApp() {
   const [page, setPage] = useState('dashboard');
   const [isDark, setDark] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const isMobile = useIsMobile();
   const [notifOpen, setNotifOpen] = useState(false);
   const now = useClock();
 
@@ -4958,6 +5031,7 @@ function DailyOSApp() {
         .dos-row-income { grid-template-columns: 90px 80px 1fr 100px 1fr auto; }
         .dos-row-expense { grid-template-columns: 90px 80px 1fr 100px 90px 1fr auto; }
         .dos-tabs button { white-space: nowrap; }
+        .c-details, .o-details { display: none; }
         @media (pointer: coarse) {
           .dailyos-shell button[aria-label^="Edit"], .dailyos-shell button[aria-label^="Delete"] { padding: 9px !important; }
         }
@@ -4966,8 +5040,10 @@ function DailyOSApp() {
           .dos-page { padding-left: 14px !important; padding-right: 14px !important; }
           .dos-tabs { flex-wrap: nowrap !important; overflow-x: auto; margin-left: -14px; margin-right: -14px; padding: 0 14px 4px; scrollbar-width: none; }
           .dos-tabs::-webkit-scrollbar { display: none; }
-          .dos-row-income { grid-template-columns: 1fr auto auto; grid-template-areas: "type amount actions" "date person person" "notes notes notes"; row-gap: 4px; padding: 12px 2px !important; }
-          .dos-row-expense { grid-template-columns: 1fr auto auto; grid-template-areas: "cat amount actions" "date person pay" "notes notes notes"; row-gap: 4px; padding: 12px 2px !important; }
+          .dos-row-income { grid-template-columns: 1fr auto auto; grid-template-areas: "type amount actions" "date details details" "person person person" "notes notes notes"; row-gap: 4px; padding: 12px 2px !important; }
+          .dos-row-expense { grid-template-columns: 1fr auto auto; grid-template-areas: "cat amount actions" "date details details" "person person pay" "notes notes notes"; row-gap: 4px; padding: 12px 2px !important; }
+          .dos-row .c-details { display: block; grid-area: details; justify-self: end; }
+          .dos-row:not(.is-open) .c-person, .dos-row:not(.is-open) .c-pay, .dos-row:not(.is-open) .c-notes { display: none; }
           .dos-row .c-type { grid-area: type; font-weight: 600; }
           .dos-row-expense .c-type { grid-area: cat; color: inherit; }
           .dos-row .c-date { grid-area: date; font-size: 12px; }
@@ -4985,6 +5061,8 @@ function DailyOSApp() {
           .dos-oblig .o-name { grid-area: name; min-width: 0 !important; }
           .dos-oblig .o-amount { grid-area: amount; min-width: 0 !important; }
           .dos-oblig .o-schedule { grid-area: schedule; text-align: left !important; min-width: 0 !important; }
+          .dos-oblig .o-details { display: block; }
+          .dos-oblig:not(.is-open) .o-schedule, .dos-oblig:not(.is-open) .o-meta { display: none; }
           .dos-oblig .o-actions { grid-area: actions; justify-content: space-between; flex-wrap: wrap; }
           .dos-oblig .o-actions button { min-height: 34px; }
           .dailyos-shell input, .dailyos-shell select, .dailyos-shell textarea { font-size: 16px !important; }
@@ -5000,14 +5078,16 @@ function DailyOSApp() {
       `}</style>
 
       <div className="dailyos-shell">
-        <aside className="dailyos-sidebar">
-          <SidebarContent colors={colors} page={page} setPage={setPage} dark={isDark} setDark={setDark} />
-        </aside>
+        {!isMobile && (
+          <aside className="dailyos-sidebar">
+            <SidebarContent colors={colors} page={page} setPage={setPage} dark={isDark} setDark={setDark} />
+          </aside>
+        )}
 
-        {mobileOpen && (
+        {isMobile && mobileOpen && (
           <div className="mobile-scrim open" onClick={() => setMobileOpen(false)} />
         )}
-        {mobileOpen && (
+        {isMobile && mobileOpen && (
           <div className="dailyos-mobile-sidebar">
             <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '14px 14px 0' }}>
               <button
@@ -5028,7 +5108,7 @@ function DailyOSApp() {
         <main className="dailyos-main">
           <TopBar
             colors={colors} title={currentTitle}
-            onMenu={() => setMobileOpen(true)}
+            onMenu={() => setMobileOpen(true)} isMobile={isMobile}
             notifOpen={notifOpen} setNotifOpen={setNotifOpen}
             notifications={notifications}
           />
